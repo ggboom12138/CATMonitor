@@ -1,7 +1,7 @@
-// CATMonitor SSD 监控 SPA — 原生 JS + Canvas，零依赖。
-// 布局：概览（overview cards）→ 盘组（大框=RAID 逻辑盘：使用率+IO 曲线，
-// 内嵌小框=物理 SSD：SMART 信息；直连盘为独立卡片，数据完整）→ 详情
-// （SMART 表 + 实时曲线，60 点滚动缓冲，前端轮询 /api/ssd）。
+// CATMonitor SSD 监控 SPA — 原生 JS + Canvas，零依赖、零点击交互。
+// 布局：概览（overview cards）→ 盘组（大框 = 逻辑盘：使用率 + 框内三张 IO
+// 曲线；内嵌小框 = 物理 SSD：完整 SMART 表平铺；直连盘自成一体，曲线 +
+// SMART 全在框内）。前端轮询 /api/ssd，曲线 60 点滚动缓冲。
 (function () {
   'use strict';
 
@@ -13,9 +13,7 @@
     intervalSec: 3,
     timer: null,
     sessionID: null,
-    selectedPD: null,     // physical disk device (SMART table)
-    selectedCurve: null,  // curve source device (logical volume or direct disk)
-    history: {},          // curveDevice -> {readMB:[], writeMB:[], readIOPS:[], writeIOPS:[], readLat:[], writeLat:[]}
+    history: {},   // curveDevice -> {readMB:[], writeMB:[], readIOPS:[], writeIOPS:[], readLat:[], writeLat:[]}
   };
 
   // ---------- helpers ----------
@@ -23,6 +21,12 @@
 
   function cssVar(name) {
     return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
+
+  // safeID turns a device name ("sdb", "megaraid,0") into an HTML-safe id
+  // fragment for per-group canvas elements.
+  function safeID(s) {
+    return String(s).replace(/[^a-zA-Z0-9_-]/g, '_');
   }
 
   function fmtNum(v) {
@@ -100,37 +104,6 @@
 
     renderOverview(data.overview || {});
     renderGroups(data.groups || []);
-
-    if (!data.groups || data.groups.length === 0) {
-      $('detailSection').classList.add('hidden');
-      return;
-    }
-    ensureSelection(data.groups);
-    markSelected();
-    renderDetail(data);
-  }
-
-  function ensureSelection(groups) {
-    var pdAlive = false, curveAlive = false;
-    groups.forEach(function (g) {
-      (g.members || []).forEach(function (m) {
-        if (m.device === state.selectedPD) pdAlive = true;
-        if (m.device === state.selectedCurve) curveAlive = true;
-      });
-      if (g.logical && g.logical.device === state.selectedCurve) curveAlive = true;
-    });
-    if (!pdAlive) state.selectedPD = null;
-    if (!curveAlive) state.selectedCurve = null;
-    if (!state.selectedPD && !state.selectedCurve) {
-      var g = groups[0];
-      if (g.logical) {
-        state.selectedCurve = g.logical.device;
-        state.selectedPD = g.members && g.members[0] ? g.members[0].device : null;
-      } else {
-        var m = g.members && g.members[0];
-        if (m) { state.selectedPD = m.device; state.selectedCurve = m.device; }
-      }
-    }
   }
 
   function renderOverview(ov) {
@@ -176,32 +149,60 @@
       if (g.logical) {
         frames += groupFrame(g);
       } else {
-        (g.members || []).forEach(function (m) { standalone += physicalCard(m, true); });
+        (g.members || []).forEach(function (m) { standalone += directFrame(m); });
       }
     });
     $('diskCount').textContent = pdCount + ' 块物理盘';
     $('topologyHint').textContent = frames
-      ? '大框 = RAID 逻辑盘（使用率与 IO 曲线在这一层）· 内嵌小框 = 物理 SSD（SMART 健康信息在这一层）'
+      ? '大框 = RAID 逻辑盘（使用率与 IO 曲线在这一层）· 内嵌小框 = 物理 SSD（完整 SMART 平铺）'
       : '';
-    $('diskGrid').innerHTML = frames + (standalone ? '<div class="disk-grid">' + standalone + '</div>' : '');
-    bindCardClicks();
+    $('diskGrid').innerHTML = frames + standalone;
+
+    // Feed rolling buffers and draw every frame's charts.
+    groups.forEach(function (g) {
+      if (g.logical) {
+        drawChartsFor(g.logical.device, g.logical.io);
+      } else {
+        (g.members || []).forEach(function (m) { drawChartsFor(m.device, m.io); });
+      }
+    });
   }
 
+  // groupFrame renders a RAID logical volume frame: header (usage) + charts
+  // + nested physical member cards.
   function groupFrame(g) {
     var lv = g.logical;
     var usage = lv.space ? lv.space.usage_percent : null;
-    var members = (g.members || []).map(function (m) { return physicalCard(m, false); }).join('');
+    var members = (g.members || []).map(physicalCard).join('');
     var noMembers = (!g.members || g.members.length === 0)
       ? '<div class="hint">未能推断成员物理盘（容量无法唯一匹配）</div>' : '';
     return '<div class="group-frame">' +
-      '<div class="group-head" data-curve="' + esc(lv.device) + '">' +
+      '<div class="group-head">' +
       '  <span class="group-device">' + esc(lv.device) + '</span>' +
       '  <span class="badge accent">逻辑盘</span>' +
       '  <span class="group-model">' + esc(lv.model || '') + '</span>' +
       '  <div class="group-usage">' + usageBar(usage) + '</div>' +
       '  <span class="group-cap">' + fmtGB(lv.capacity_gb) + '</span>' +
       '</div>' +
+      chartsHTML(lv.device) +
       '<div class="group-members">' + members + '</div>' + noMembers +
+      '</div>';
+  }
+
+  // directFrame renders a standalone physical (direct-attach) disk as its
+  // own frame: usage header + its own charts + its full SMART card.
+  function directFrame(d) {
+    var usage = d.space ? d.space.usage_percent : null;
+    return '<div class="group-frame">' +
+      '<div class="group-head">' +
+      '  <span class="group-device">' + esc(d.device) + '</span>' +
+      '  <span class="badge">直连盘</span>' +
+      '  <span class="group-model">' + esc(d.model || '') + '</span>' +
+      '  <div class="group-usage">' + usageBar(usage) + '</div>' +
+      '  <span class="group-cap">' + fmtGB(d.capacity_gb) + '</span>' +
+      '</div>' +
+      chartsHTML(d.device) +
+      '<div class="group-members">' + physicalCard(d) + '</div>' +
       '</div>';
   }
 
@@ -213,18 +214,31 @@
       '<div class="bar ' + cls + '"><i style="width:' + w + '%"></i></div></div>';
   }
 
-  // physicalCard renders one physical SSD. direct=true for standalone
-  // (direct-attach / unmapped) disks: they also carry usage and IO.
-  function physicalCard(d, direct) {
+  // chartsHTML builds the three canvas cards for one curve source (logical
+  // volume or direct disk).
+  function chartsHTML(curveDevice) {
+    var id = safeID(curveDevice);
+    return '<div class="group-charts">' +
+      chartCard('读写吞吐 (MB/s)', 'tp', id) +
+      chartCard('读写 IOPS (次/s)', 'io', id) +
+      chartCard('读写延迟 (ms)', 'lat', id) +
+      '</div>';
+  }
+
+  function chartCard(title, kind, id) {
+    return '<div class="chart-card">' +
+      '<div class="chart-head"><span>' + esc(title) + '</span>' +
+      '<span class="legend"><span><i style="background:' + COLOR_READ + '"></i>读</span>' +
+      '<span><i style="background:' + COLOR_WRITE + '"></i>写</span></span></div>' +
+      '<canvas id="chart-' + kind + '-' + id + '"></canvas>' +
+      '</div>';
+  }
+
+  // physicalCard renders one physical SSD with the FULL SMART table laid out
+  // flat — no click interaction.
+  function physicalCard(d) {
     var h = healthOf(d);
-    var wear = d.smart && d.smart.wear_percent != null ? d.smart.wear_percent : null;
-    var usage = direct && d.space ? d.space.usage_percent : null;
-    var ioLine = '';
-    if (direct && d.io) {
-      ioLine = diskRow('实时读写',
-        fmtNum(d.io.read_throughput_mb_s) + ' / ' + fmtNum(d.io.write_throughput_mb_s) + ' MB/s');
-    }
-    return '<div class="disk-card" data-device="' + esc(d.device) + '" data-direct="' + (direct ? 1 : 0) + '">' +
+    return '<div class="disk-card disk-card-flat">' +
       '<div class="disk-head">' +
       '  <span class="health-dot ' + h + '" title="' + (h === 'ok' ? '健康' : h === 'err' ? '异常' : '无 SMART 数据') + '"></span>' +
       '  <span class="disk-device">' + esc(d.device) + '</span>' +
@@ -233,73 +247,11 @@
       '<div class="disk-model">' + esc(d.model || '未知型号') +
       (d.interface ? ' · ' + esc(d.interface) : '') +
       (d.serial ? ' · SN ' + esc(d.serial) : '') + '</div>' +
-      '<div class="disk-rows">' +
-      diskRow('温度', d.smart && d.smart.temperature != null ? fmtTemp(d.smart.temperature) : 'N/A') +
-      diskRow('累计写入', d.smart && d.smart.data_written_gb != null ? fmtGB(d.smart.data_written_gb) : 'N/A') +
-      barRow('磨损', wear, wearClass(wear), wear != null ? fmtPct(wear) : 'N/A') +
-      (direct ? barRow('使用率', usage, usageClass(usage), usage != null ? fmtPct(usage) : 'N/A') : '') +
-      ioLine +
-      '</div></div>';
+      '<table class="smart-table">' + smartRowsHTML(d.smart || {}) + '</table>' +
+      '</div>';
   }
 
-  function diskRow(k, v) {
-    return '<div class="disk-row"><span class="k">' + esc(k) + '</span><span>' + esc(v) + '</span></div>';
-  }
-
-  function barRow(k, pct, cls, text) {
-    var w = pct != null && !isNaN(pct) ? Math.max(0, Math.min(100, pct)) : 0;
-    return '<div><div class="disk-row"><span class="k">' + esc(k) + '</span><span>' + esc(text) + '</span></div>' +
-      '<div class="bar ' + cls + '"><i style="width:' + w + '%"></i></div></div>';
-  }
-
-  function wearClass(w) {
-    if (w == null || isNaN(w)) return 'accent';
-    if (w >= 80) return 'err';
-    if (w >= 60) return 'warn';
-    return 'ok';
-  }
-
-  function usageClass(u) {
-    if (u == null || isNaN(u)) return 'accent';
-    if (u >= 90) return 'err';
-    if (u >= 75) return 'warn';
-    return 'ok';
-  }
-
-  function bindCardClicks() {
-    Array.prototype.forEach.call(document.querySelectorAll('.disk-card'), function (el) {
-      el.addEventListener('click', function (ev) {
-        state.selectedPD = el.getAttribute('data-device');
-        if (el.getAttribute('data-direct') === '1') {
-          state.selectedCurve = el.getAttribute('data-device');
-        }
-        markSelected();
-        fetchAndRender();
-        $('detailSection').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-      });
-    });
-    Array.prototype.forEach.call(document.querySelectorAll('.group-head'), function (el) {
-      el.addEventListener('click', function () {
-        state.selectedCurve = el.getAttribute('data-curve');
-        markSelected();
-        fetchAndRender();
-        $('detailSection').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-      });
-    });
-  }
-
-  function markSelected() {
-    Array.prototype.forEach.call(document.querySelectorAll('.disk-card'), function (el) {
-      el.classList.toggle('selected', el.getAttribute('data-device') === state.selectedPD);
-    });
-    Array.prototype.forEach.call(document.querySelectorAll('.group-head'), function (el) {
-      el.classList.toggle('selected', el.getAttribute('data-curve') === state.selectedCurve);
-    });
-    $('detailSection').classList.remove('hidden');
-    $('detailDevice').textContent = (state.selectedPD || '') + (state.selectedPD && state.selectedCurve ? ' · ' : '') + (state.selectedCurve || '');
-  }
-
-  // ---------- detail ----------
+  // ---------- SMART table ----------
   var SMART_ROWS = [
     ['健康状态', function (s) {
       if (s.passed == null) return td('N/A', 'na');
@@ -323,87 +275,50 @@
     return td(fmt(v), cls);
   }
 
-  function findPD(groups, device) {
-    for (var i = 0; i < groups.length; i++) {
-      var ms = groups[i].members || [];
-      for (var j = 0; j < ms.length; j++) {
-        if (ms[j].device === device) return ms[j];
-      }
-    }
-    return null;
-  }
-
-  // findIO returns the IOView for a curve source: a logical volume or a
-  // direct-attach physical disk.
-  function findIO(groups, device) {
-    for (var i = 0; i < groups.length; i++) {
-      var g = groups[i];
-      if (g.logical && g.logical.device === device) return g.logical.io || null;
-      var ms = g.members || [];
-      for (var j = 0; j < ms.length; j++) {
-        if (ms[j].device === device && ms[j].io) return ms[j].io;
-      }
-    }
-    return null;
-  }
-
-  function renderSmartTable(d) {
-    var s = d.smart || {};
+  function smartRowsHTML(s) {
     var html = '';
     SMART_ROWS.forEach(function (row) {
       html += '<tr><td>' + row[0] + '</td>' + row[1](s) + '</tr>';
     });
-    $('smartTable').innerHTML = html;
+    return html;
   }
 
-  function renderDetail(data) {
-    var smartCard = $('smartCard');
-    var charts = document.querySelector('.detail-charts');
-    var pd = state.selectedPD ? findPD(data.groups, state.selectedPD) : null;
-    if (pd) {
-      renderSmartTable(pd);
-      smartCard.classList.remove('hidden');
-    } else {
-      smartCard.classList.add('hidden');
+  // ---------- charts ----------
+  // drawChartsFor feeds the rolling buffer of one curve source and redraws
+  // its three canvases.
+  function drawChartsFor(curveDevice, io) {
+    var h = state.history[curveDevice];
+    if (!h) {
+      h = { readMB: [], writeMB: [], readIOPS: [], writeIOPS: [], readLat: [], writeLat: [] };
+      state.history[curveDevice] = h;
     }
-
-    var io = state.selectedCurve ? findIO(data.groups, state.selectedCurve) : null;
-    if (io) {
-      var h = state.history[state.selectedCurve];
-      if (!h) {
-        h = { readMB: [], writeMB: [], readIOPS: [], writeIOPS: [], readLat: [], writeLat: [] };
-        state.history[state.selectedCurve] = h;
-      }
-      push(h.readMB, io.read_throughput_mb_s || 0);
-      push(h.writeMB, io.write_throughput_mb_s || 0);
-      push(h.readIOPS, io.read_iops || 0);
-      push(h.writeIOPS, io.write_iops || 0);
-      push(h.readLat, io.read_latency_ms || 0);
-      push(h.writeLat, io.write_latency_ms || 0);
-      drawChart($('chartThroughput'), [
-        { name: '读', color: COLOR_READ, data: h.readMB },
-        { name: '写', color: COLOR_WRITE, data: h.writeMB },
-      ]);
-      drawChart($('chartIOPS'), [
-        { name: '读', color: COLOR_READ, data: h.readIOPS },
-        { name: '写', color: COLOR_WRITE, data: h.writeIOPS },
-      ]);
-      drawChart($('chartLatency'), [
-        { name: '读', color: COLOR_READ, data: h.readLat },
-        { name: '写', color: COLOR_WRITE, data: h.writeLat },
-      ]);
-      charts.classList.remove('hidden');
-    } else {
-      charts.classList.add('hidden');
-    }
+    var id = safeID(curveDevice);
+    if (!io) io = {};
+    push(h.readMB, io.read_throughput_mb_s || 0);
+    push(h.writeMB, io.write_throughput_mb_s || 0);
+    push(h.readIOPS, io.read_iops || 0);
+    push(h.writeIOPS, io.write_iops || 0);
+    push(h.readLat, io.read_latency_ms || 0);
+    push(h.writeLat, io.write_latency_ms || 0);
+    drawChart($('chart-tp-' + id), [
+      { color: COLOR_READ, data: h.readMB },
+      { color: COLOR_WRITE, data: h.writeMB },
+    ]);
+    drawChart($('chart-io-' + id), [
+      { color: COLOR_READ, data: h.readIOPS },
+      { color: COLOR_WRITE, data: h.writeIOPS },
+    ]);
+    drawChart($('chart-lat-' + id), [
+      { color: COLOR_READ, data: h.readLat },
+      { color: COLOR_WRITE, data: h.writeLat },
+    ]);
   }
 
-  // ---------- canvas chart ----------
   function drawChart(canvas, series) {
     if (!canvas) return;
     var dpr = window.devicePixelRatio || 1;
     var w = canvas.clientWidth || 300;
-    var hpx = canvas.clientHeight || 180;
+    var hpx = canvas.clientHeight || 160;
     canvas.width = w * dpr;
     canvas.height = hpx * dpr;
     var ctx = canvas.getContext('2d');
@@ -447,8 +362,8 @@
       ctx.beginPath();
       for (var j = 0; j < s.data.length; j++) {
         var x = x0 + step * j;
-        var y = padT + plotH - plotH * (s.data[j] / nice);
-        if (j === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        var yy = padT + plotH - plotH * (s.data[j] / nice);
+        if (j === 0) ctx.moveTo(x, yy); else ctx.lineTo(x, yy);
       }
       ctx.stroke();
     });
