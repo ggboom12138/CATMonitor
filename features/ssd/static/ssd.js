@@ -206,6 +206,13 @@
       '</div>';
   }
 
+  function usageClass(u) {
+    if (u == null || isNaN(u)) return 'accent';
+    if (u >= 90) return 'err';
+    if (u >= 75) return 'warn';
+    return 'ok';
+  }
+
   function usageBar(pct) {
     var cls = usageClass(pct);
     var w = pct != null && !isNaN(pct) ? Math.max(0, Math.min(100, pct)) : 0;
