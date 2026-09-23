@@ -303,6 +303,64 @@ func TestThermal(t *testing.T) {
 	}
 }
 
+func TestRotational(t *testing.T) {
+	s := New(testdataSys)
+	rot, err := s.Rotational("sda")
+	if err != nil {
+		t.Fatalf("Rotational(sda) failed: %v", err)
+	}
+	if !rot {
+		t.Error("sda should be rotational (fixture value 1)")
+	}
+	rot, err = s.Rotational("sdb")
+	if err != nil {
+		t.Fatalf("Rotational(sdb) failed: %v", err)
+	}
+	if rot {
+		t.Error("sdb should be non-rotational (fixture value 0)")
+	}
+	if _, err := s.Rotational("nonexistent"); err == nil {
+		t.Error("missing device should return an error (unknown medium)")
+	}
+}
+
+func TestBlockNamesIncludesDM(t *testing.T) {
+	s := New(testdataSys)
+	names, err := s.BlockNames()
+	if err != nil {
+		t.Fatalf("BlockNames failed: %v", err)
+	}
+	found := map[string]bool{}
+	for _, n := range names {
+		found[n] = true
+	}
+	for _, want := range []string{"sda", "sdb", "loop0", "dm-0"} {
+		if !found[want] {
+			t.Errorf("expected %s in BlockNames, got %v", want, names)
+		}
+	}
+}
+
+func TestDMHelpers(t *testing.T) {
+	s := New(testdataSys)
+	if name := s.DMName("dm-0"); name != "openeuler-root" {
+		t.Errorf("DMName(dm-0): got %q want openeuler-root", name)
+	}
+	if name := s.DMName("dm-99"); name != "" {
+		t.Errorf("DMName of missing device should be empty, got %q", name)
+	}
+	slaves, err := s.DMSlaves("dm-0")
+	if err != nil {
+		t.Fatalf("DMSlaves(dm-0) failed: %v", err)
+	}
+	if len(slaves) != 1 || slaves[0] != "sdb3" {
+		t.Errorf("DMSlaves(dm-0): got %v want [sdb3]", slaves)
+	}
+	if _, err := s.DMSlaves("dm-99"); err == nil {
+		t.Error("DMSlaves of missing device should return error")
+	}
+}
+
 func TestSetRootRedirectsDefault(t *testing.T) {
 	original := root
 	SetRoot(testdataSys)

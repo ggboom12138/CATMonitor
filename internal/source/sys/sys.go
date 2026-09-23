@@ -7,6 +7,7 @@
 package sys
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -123,6 +124,24 @@ type Source interface {
 	// BlockDevices returns the real block devices under /sys/block (loop/ram/sr
 	// skipped), each with model and size. Works without root or smartmontools.
 	BlockDevices() ([]BlockDev, error)
+	// Rotational reports whether the given block device (e.g. "sdb") is a
+	// rotating disk. Reads /sys/block/<dev>/queue/rotational ("0" = SSD or
+	// non-rotational, "1" = HDD). Returns an error when the file is absent
+	// (RAID logical volumes and some virtual devices do not expose it), so
+	// callers can distinguish "unknown" from "SSD".
+	Rotational(dev string) (bool, error)
+	// BlockNames lists all block device names under /sys/block without any
+	// filtering (including dm-*, loop*, ...), so callers can build device
+	// maps such as device-mapper name -> dm-N.
+	BlockNames() ([]string, error)
+	// DMName returns the device-mapper name of a dm-* device (e.g. dm-0 ->
+	// "openeuler-root"), read from /sys/block/dm-0/dm/name. Empty when the
+	// file is absent.
+	DMName(dm string) string
+	// DMSlaves returns the immediate underlying device names of a
+	// device-mapper device (e.g. dm-0 -> ["sdb3"]), listed from
+	// /sys/block/dm-0/slaves/. Empty when the directory is absent.
+	DMSlaves(dm string) ([]string, error)
 }
 
 type defaultSource struct {
@@ -417,6 +436,60 @@ func (s *defaultSource) BlockDevices() ([]BlockDev, error) {
 		out = append(out, bd)
 	}
 	return out, nil
+}
+
+// Rotational reads /sys/block/<dev>/queue/rotational. "0" maps to false
+// (SSD / non-rotational), "1" to true (HDD). Any other content or a missing
+// file returns an error so callers can treat the medium as unknown.
+func (s *defaultSource) Rotational(dev string) (bool, error) {
+	data, err := os.ReadFile(filepath.Join(s.root, "block", dev, "queue", "rotational"))
+	if err != nil {
+		return false, err
+	}
+	switch strings.TrimSpace(string(data)) {
+	case "1":
+		return true, nil
+	case "0":
+		return false, nil
+	}
+	return false, fmt.Errorf("unexpected rotational value %q for %s", strings.TrimSpace(string(data)), dev)
+}
+
+// BlockNames lists every entry under /sys/block with no filtering.
+func (s *defaultSource) BlockNames() ([]string, error) {
+	entries, err := os.ReadDir(filepath.Join(s.root, "block"))
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	return names, nil
+}
+
+// DMName reads /sys/block/<dm>/dm/name (e.g. dm-0 -> "openeuler-root").
+// Returns an empty string when the file is missing or unreadable.
+func (s *defaultSource) DMName(dm string) string {
+	data, err := os.ReadFile(filepath.Join(s.root, "block", dm, "dm", "name"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// DMSlaves lists the entries of /sys/block/<dm>/slaves/ (the immediate
+// underlying devices of a device-mapper node, e.g. dm-0 -> ["sdb3"]).
+func (s *defaultSource) DMSlaves(dm string) ([]string, error) {
+	entries, err := os.ReadDir(filepath.Join(s.root, "block", dm, "slaves"))
+	if err != nil {
+		return nil, err
+	}
+	slaves := make([]string, 0, len(entries))
+	for _, e := range entries {
+		slaves = append(slaves, e.Name())
+	}
+	return slaves, nil
 }
 
 // isRealBlockDevice skips virtual block devices that have no real hardware
