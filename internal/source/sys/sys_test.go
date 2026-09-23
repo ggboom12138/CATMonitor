@@ -361,6 +361,19 @@ func TestDMHelpers(t *testing.T) {
 	}
 }
 
+func TestDeviceVendor(t *testing.T) {
+	s := New(testdataSys)
+	if v := s.DeviceVendor("sda"); v != "ATA" {
+		t.Errorf("DeviceVendor(sda): got %q want ATA", v)
+	}
+	if v := s.DeviceVendor("sdb"); v != "AVAGO" {
+		t.Errorf("DeviceVendor(sdb): got %q want AVAGO", v)
+	}
+	if v := s.DeviceVendor("missing"); v != "" {
+		t.Errorf("DeviceVendor of missing device should be empty, got %q", v)
+	}
+}
+
 func TestSetRootRedirectsDefault(t *testing.T) {
 	original := root
 	SetRoot(testdataSys)

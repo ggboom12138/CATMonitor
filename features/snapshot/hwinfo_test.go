@@ -157,6 +157,19 @@ func TestHWDiskInfo(t *testing.T) {
 	if byDev["sdb"].Labels["media"] != "ssd" {
 		t.Errorf("sdb media: got %q want ssd", byDev["sdb"].Labels["media"])
 	}
+	// kind classification with RAID channels present (scan mock has
+	// megaraid,*): sda vendor=ATA (fixture) -> physical (direct disk next to
+	// the RAID card); sdb vendor=AVAGO (fixture) -> logical volume; RAID
+	// channels themselves -> physical.
+	if byDev["sda"].Labels["kind"] != "physical" {
+		t.Errorf("sda kind: got %q want physical (vendor ATA is not a RAID vendor)", byDev["sda"].Labels["kind"])
+	}
+	if byDev["sdb"].Labels["kind"] != "logical" {
+		t.Errorf("sdb kind: got %q want logical (vendor AVAGO is a RAID vendor)", byDev["sdb"].Labels["kind"])
+	}
+	if byDev["megaraid,0"].Labels["kind"] != "physical" {
+		t.Errorf("megaraid,0 kind: got %q want physical (passthrough channel)", byDev["megaraid,0"].Labels["kind"])
+	}
 	// RAID channel rows carry identity + media from the smartctl JSON.
 	raid0 := byDev["megaraid,0"]
 	if raid0.Labels["model"] != "SAMSUNG MZ7LH960HAJR-00005" {
@@ -212,3 +225,26 @@ func TestHWOSInfo(t *testing.T) {
 // compile-time: hwCollector is used.
 var _ = (*hwCollector)(nil)
 var _ collector.Metric
+
+// TestHWDiskInfoNoRAID verifies the kind classification when NO RAID
+// passthrough channels exist (scan fails): every /sys/block device is a
+// direct physical disk, regardless of vendor.
+func TestHWDiskInfoNoRAID(t *testing.T) {
+	sys.SetRoot(hwTestdataSys)
+	defer sys.SetRoot("/sys")
+	smartctl.SetInfoFetcher(func(dev string) (string, error) {
+		return readHWMock(t, "../../tests/testdata/smartctl-info-output.txt"), nil
+	})
+	smartctl.SetScanFetcher(func() (string, error) { return "", os.ErrPermission })
+	defer smartctl.ResetFetcher()
+	c := newTestHW()
+	m := c.diskInfo(time.Now())
+	if len(m) != 2 {
+		t.Fatalf("expected 2 disks (sda+sdb), got %d", len(m))
+	}
+	for _, mm := range m {
+		if mm.Labels["kind"] != "physical" {
+			t.Errorf("%s kind: got %q want physical (no RAID channels on machine)", mm.Labels["device"], mm.Labels["kind"])
+		}
+	}
+}

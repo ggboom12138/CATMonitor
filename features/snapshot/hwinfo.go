@@ -228,20 +228,26 @@ func (c *hwCollector) npuInfo(now time.Time) []collector.Metric {
 // RAID passthrough channel discovered via `smartctl --scan`. Device list,
 // model and capacity come from /sys/block (always available, no root);
 // smartctl only enriches serial/firmware/interface when smartmontools is
-// present. The `media` label classifies ssd/hdd/unknown so consumers (e.g.
-// the ssd feature UI) can filter. The value is the disk size in GB so the UI
-// can sum capacities.
+// present. The `media` label classifies ssd/hdd/unknown and the `kind` label
+// distinguishes physical disks from RAID logical volumes (see directKind /
+// isRAIDVendor). The value is the disk size in GB so the UI can sum
+// capacities.
 func (c *hwCollector) diskInfo(now time.Time) []collector.Metric {
 	devs, err := sys.Default().BlockDevices()
 	if err != nil {
 		return nil
 	}
+	// RAID passthrough channels present => /sys/block devices need vendor
+	// screening; otherwise every /sys/block device is a direct physical
+	// disk (no RAID card in front of it).
+	hasRAID := hasRAIDChannels()
 	var metrics []collector.Metric
 	for _, bd := range devs {
 		labels := map[string]string{
 			"device": bd.Name,
 			"model":  bd.Model,
 			"media":  mediaLabel(bd.Name),
+			"kind":   directKind(bd.Name, hasRAID),
 		}
 		if di, err := smartctl.Default().Info(bd.Name); err == nil && di != nil {
 			if di.Serial != "" {
@@ -268,6 +274,59 @@ func (c *hwCollector) diskInfo(now time.Time) []collector.Metric {
 	return metrics
 }
 
+// raidVendorPrefixes lists SCSI vendor strings that identify a RAID
+// controller: logical volumes present the CONTROLLER as their vendor, while
+// direct disks report "ATA" or the disk manufacturer (SAMSUNG, SEAGATE...).
+var raidVendorPrefixes = []string{
+	"AVAGO", "LSI", "BROADCOM", "DELL", "PERC", "HP", "HPE",
+	"LENOVO", "ADAPTEC", "MICROCHIP", "ARECA", "3WARE", "IBM",
+}
+
+// isRAIDVendor reports whether a SCSI vendor string belongs to a RAID
+// controller family.
+func isRAIDVendor(vendor string) bool {
+	v := strings.ToUpper(strings.TrimSpace(vendor))
+	for _, p := range raidVendorPrefixes {
+		if strings.HasPrefix(v, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasRAIDChannels reports whether smartctl --scan found RAID passthrough
+// channels (e.g. "megaraid,0"). When none exist, every /sys/block device is
+// a direct physical disk; when they exist, /sys/block devices may be logical
+// volumes served by the controller.
+func hasRAIDChannels() bool {
+	src := smartctl.Default()
+	if !src.Available() {
+		return false
+	}
+	for _, entry := range src.Scan() {
+		if strings.Contains(entry.Type, ",") {
+			return true
+		}
+	}
+	return false
+}
+
+// directKind classifies a /sys/block device. NVMe namespaces are always
+// physical (no RAID card virtualizes them as nvme*). When the machine has no
+// RAID channels the device is a direct physical disk. When RAID channels
+// exist, a device whose SCSI vendor is a RAID controller family is a logical
+// volume; anything else (e.g. a direct SATA SSD next to a RAID card) stays
+// physical.
+func directKind(dev string, hasRAID bool) string {
+	if strings.HasPrefix(dev, "nvme") || !hasRAID {
+		return "physical"
+	}
+	if isRAIDVendor(sys.Default().DeviceVendor(dev)) {
+		return "logical"
+	}
+	return "physical"
+}
+
 // raidDiskInfo emits disk_info rows for physical disks behind a RAID
 // controller, discovered via `smartctl --scan` passthrough channels (e.g.
 // "megaraid,0"). These devices do not exist under /sys/block, so identity
@@ -289,6 +348,7 @@ func raidDiskInfo(now time.Time) []collector.Metric {
 		labels := map[string]string{
 			"device": entry.Type,
 			"media":  hi.Media,
+			"kind":   "physical",
 		}
 		if hi.Model != "" {
 			labels["model"] = hi.Model

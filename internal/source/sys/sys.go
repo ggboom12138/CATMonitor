@@ -142,6 +142,10 @@ type Source interface {
 	// device-mapper device (e.g. dm-0 -> ["sdb3"]), listed from
 	// /sys/block/dm-0/slaves/. Empty when the directory is absent.
 	DMSlaves(dm string) ([]string, error)
+	// DeviceVendor returns the SCSI vendor string of a block device (e.g.
+	// "AVAGO" for RAID logical volumes, "ATA" or "SAMSUNG" for direct
+	// disks), read from /sys/block/<dev>/device/vendor. Empty when absent.
+	DeviceVendor(dev string) string
 }
 
 type defaultSource struct {
@@ -490,6 +494,17 @@ func (s *defaultSource) DMSlaves(dm string) ([]string, error) {
 		slaves = append(slaves, e.Name())
 	}
 	return slaves, nil
+}
+
+// DeviceVendor reads /sys/block/<dev>/device/vendor (SCSI vendor field).
+// RAID controllers identify their logical volumes with the controller vendor
+// (e.g. "AVAGO"), while direct disks report "ATA" or the disk vendor.
+func (s *defaultSource) DeviceVendor(dev string) string {
+	data, err := os.ReadFile(filepath.Join(s.root, "block", dev, "device", "vendor"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
 }
 
 // isRealBlockDevice skips virtual block devices that have no real hardware
