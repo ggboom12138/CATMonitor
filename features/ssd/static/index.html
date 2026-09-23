@@ -40,14 +40,15 @@
     <section id="overview" class="overview"></section>
 
     <section class="section">
-      <h2 class="section-title">SSD 盘列表 <span id="diskCount" class="section-badge"></span></h2>
-      <div id="diskGrid" class="disk-grid"></div>
+      <h2 class="section-title">SSD 盘组 <span id="diskCount" class="section-badge"></span></h2>
+      <div id="diskGrid" class="group-grid"></div>
+      <p class="hint" id="topologyHint"></p>
     </section>
 
     <section id="detailSection" class="section hidden">
-      <h2 class="section-title">单盘详情 <span id="detailDevice" class="section-badge"></span></h2>
+      <h2 class="section-title">详情 <span id="detailDevice" class="section-badge"></span></h2>
       <div class="detail-layout">
-        <div class="detail-card">
+        <div class="detail-card" id="smartCard">
           <h3 class="detail-card-title">SMART 健康</h3>
           <table class="smart-table" id="smartTable"></table>
         </div>

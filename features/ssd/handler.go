@@ -56,21 +56,21 @@ func (h *Handler) readDiskSnapshot() (*snapshot.GlobalSnapshot, *snapshot.CompSn
 	return g, c, nil
 }
 
-// handleAPI returns the per-disk SSD views as SSDResponse JSON.
+// handleAPI returns the grouped per-disk SSD views as SSDResponse JSON.
 func (h *Handler) handleAPI(w http.ResponseWriter, r *http.Request) {
 	g, c, err := h.readDiskSnapshot()
 	if err != nil {
 		http.Error(w, `{"error":"snapshot not ready"}`, http.StatusServiceUnavailable)
 		return
 	}
-	disks, overview := buildDiskViews(c.Specs, c.Metrics)
+	groups, overview := buildGroups(c.Specs, c.Metrics)
 	resp := SSDResponse{
 		SessionID:         g.SessionID,
 		Version:           version.Version,
 		Timestamp:         formatTime(c.Timestamp),
 		RefreshIntervalMS: g.RefreshInterval,
 		Overview:          overview,
-		Disks:             disks,
+		Groups:            groups,
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-cache")

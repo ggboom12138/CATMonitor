@@ -13,7 +13,11 @@
 为服务器上的每块 SSD 提供独立可视化页面（单独二进制 `catmonitor-ssd`、单独端口 `:19324`）：
 
 - **盘清单与识别**：SSD 数量、型号、序列号、固件、接口、容量；SSD/HDD 介质识别
-  （`/sys/block/*/queue/rotational` + smartctl JSON `rotation_rate`）。
+  （`/sys/block/*/queue/rotational` + smartctl JSON `rotation_rate`）；物理盘/逻辑卷识别
+  （`kind` 标签，见 1.4）。
+- **分组嵌套布局**：大框 = RAID 逻辑盘（使用率 + IO 曲线在这一层），内嵌小框 = 物理 SSD
+  （SMART 健康信息在这一层）；直连盘（无 RAID 卡）为独立卡片，全量数据一层展示。
+  逻辑盘 ↔ 物理盘的归属由**容量推断**建立（±1% 容差）。
 - **整盘容量/使用率**：`device_space_usage` / `device_space_detail` —— 采集端把分区与
   LVM 逻辑卷（`/dev/mapper/*` → dm-N → slaves）归属到物理盘后聚合，**不是挂载点粒度**。
 - **读写状态**：吞吐、IOPS、读写延迟（速率，daemon 侧由 diskstats 差值算出）+ 累计读写字节。
@@ -44,10 +48,29 @@
  smartctl --scan │ ───────┘                                               │        │
                  └────────────────────────────────────────────────────────┘        ▼
                                                                         ┌─ catmonitor-ssd ─┐
-                                                                        │ /api/ssd  按盘视图│
+                                                                        │ /api/ssd  分组视图 │
                                                                         │ /        SPA 页面 │
                                                                         └──────────────────┘
 ```
+
+### 1.4 物理/逻辑判定（kind 标签）
+
+`disk_info` 的 `kind` 标签由 daemon 侧 hwinfo 标注，ssd 特性据此过滤：
+
+| 设备 | kind | 判定依据 |
+|---|---|---|
+| RAID 穿透通道（`megaraid,N` 等） | physical | 通道直达物理盘，天然确定 |
+| `/sys/block` 的 NVMe 设备 | physical | NVMe 不会被 RAID 卡虚拟成 nvme* |
+| `/sys/block` 的 sd/vd/xvd，且本机无 RAID 通道 | physical | 没有阵列卡时系统盘即直挂物理盘 |
+| `/sys/block` 的 sd/vd/xvd，且本机有 RAID 通道，vendor 属于阵列卡厂商名单（AVAGO/LSI/Broadcom/DELL/PERC/HP/HPE/Lenovo/Adaptec/Microchip/Areca/3ware/IBM） | logical | 逻辑卷以阵列卡身份上报 SCSI vendor；直连盘上报 ATA 或盘厂名 → 仍为 physical |
+
+### 1.5 逻辑盘 ↔ 物理盘归属（容量推断）
+
+RAID 卡固件里的 LD→PD 映射只有厂商私有工具（storcli）能直接查询（不引入）。
+本特性用**容量匹配**推断：逻辑盘容量 ≈ 未分配物理盘容量的某子集之和（±1% 容差，
+实测 MR9440-8i 元数据占用约 0.06%）。取**最小**匹配子集；同等大小的多个候选
+（如 RAID1 镜像，任一单盘都等于卷容量）视为**歧义**，双方各自独立展示不强行归属。
+物理盘数 >16 时只尝试 1:1 匹配以约束搜索空间。
 
 ## 2. 目录结构
 
@@ -71,18 +94,19 @@ features/ssd/
 
 ### 3.1 数据组装（filter.go，纯函数）
 
-`buildDiskViews(specs, metrics) → ([]DiskView, Overview)`：
+`buildGroups(specs, metrics) → ([]DiskGroup, Overview)`：
 
-1. **盘清单**：`snapshot_disk.json` 的 `specs` 中 `disk_info` 且 `media=ssd` 的行构成
-   DiskView 基座（型号/序列号/固件/接口/容量）。`media` 由 hwinfo 在 daemon 侧标注：
-   直连盘读 rotational，RAID 物理盘用 smartctl JSON 的 `rotation_rate`/`protocol`。
-2. **指标归属**：metrics 按 `labels.device` 匹配到 DiskView，分三个维度：
-   - `smart_*` → SmartView（传输层不提供的字段保持 nil，JSON 省略）；
-   - `device_space_usage`/`device_space_detail(field)` → SpaceView；
-   - `throughput(direction)`/`iops(direction)`/`*_latency`/`*_sectors_total` → IOView。
-3. **非 SSD 设备的指标**（无匹配 spec 行）被忽略；系统级无 device 标签的指标同样忽略。
-4. **Overview**：数量、总容量、平均使用率（仅有数据的盘参与）、健康计数
-   （passed=1/0/无 SMART 三态）、最高磨损。
+1. **盘清单分类**：`snapshot_disk.json` 的 `specs` 中 `disk_info` 且 `media=ssd` 的行按
+   `kind` 分成物理盘（DiskView）与逻辑盘（LogicalView）。
+2. **指标归属**：metrics 按 `labels.device` 匹配——物理盘收 `smart_*`（直连盘另收
+   space/io），逻辑盘收 `device_space_*` 与 IO 类指标；非 SSD 设备与无 device 标签的
+   指标被忽略。
+3. **容量推断**（见 1.5）：为每个逻辑盘寻找未分配物理盘的最小匹配子集建立归属；
+   歧义或无法匹配的双方各自降级为独立展示。
+4. **分组**：`DiskGroup{Logical, Members}`——有逻辑盘的组为大框嵌小框；直连盘/
+   未归属物理盘为独立组（Members 单成员，无 Logical）。
+5. **Overview**：数量/容量/健康/磨损按**物理盘**聚合；平均使用率按**有文件系统的
+   实体**（逻辑盘 + 直连盘）统计。
 
 ### 3.2 API
 
@@ -90,32 +114,42 @@ features/ssd/
 
 ```json
 {
-  "session_id": "1690000000", "version": "v0.3.6",
-  "timestamp": "2026-09-23 10:00:00", "refresh_interval_ms": 2000,
-  "overview": {"ssd_count":2, "total_capacity_gb":2879.5, "avg_space_usage":61.18,
-                "healthy_count":1, "failed_count":0, "no_smart_count":1, "max_wear_percent":1},
-  "disks": [
-    {"device":"megaraid,0", "model":"SAMSUNG MZ7LH960HAJR-00005", "serial":"S45NNA0N662029",
-     "interface":"SATA", "capacity_gb":960.2,
-     "smart":{"passed":1, "temperature":37, "wear_percent":1, "power_on_hours":28599,
-              "power_cycles":122, "data_written_gb":5500.88, "reallocated_sectors":0}},
-    {"device":"sdb", "model":"MR9440-8i", "capacity_gb":1919.3,
-     "space":{"usage_percent":61.18, "total_gb":1750.5, "used_gb":1070.8, "avail_gb":679.7},
-     "io":{"read_throughput_mb_s":12.5, "write_throughput_mb_s":3.2, "read_iops":320, ...}}
+  "session_id": "1790149263", "version": "0.3.6",
+  "timestamp": "2026-09-23 07:41:25", "refresh_interval_ms": 2000,
+  "overview": {"ssd_count":2, "total_capacity_gb":1920.4, "avg_space_usage":61.23,
+                "healthy_count":2, "failed_count":0, "no_smart_count":0, "max_wear_percent":1},
+  "groups": [
+    {
+      "logical": {
+        "device": "sdb", "model": "MR9440-8i", "capacity_gb": 1919.3,
+        "space": {"usage_percent":61.23, "total_gb":1721.28, "used_gb":1053.88, "avail_gb":579.79},
+        "io": {"read_throughput_mb_s":0, "write_throughput_mb_s":0.02, "read_iops":0, "write_iops":1, ...}
+      },
+      "members": [
+        {"device":"megaraid,0", "model":"SAMSUNG MZ7LH960HAJR-00005", "serial":"S45NNA0N662029",
+         "interface":"SATA", "capacity_gb":960.2,
+         "smart":{"passed":1, "temperature":37, "wear_percent":1, "power_on_hours":28603,
+                  "power_cycles":122, "data_written_gb":5502.19, "reallocated_sectors":0}},
+        {"device":"megaraid,1", "...":"..."}
+      ]
+    }
   ]
 }
 ```
 
 snapshot 未就绪（daemon 未启动/未开 snapshot）→ `503 {"error":"snapshot not ready"}`。
 
-### 3.3 前端（三层页面）
+### 3.3 前端（分组嵌套页面）
 
-- **概览层**：SSD 数量 / 总容量 / 平均使用率 / 健康状态（正常·异常·无 SMART）/ 最高磨损。
-- **卡片层**：每盘一卡——健康灯（绿/红/灰）、温度、累计写入、磨损条、使用率条；
-  RAID 阵列成员的使用率显示 N/A。
-- **详情层**：点选卡片 → SMART 属性表（阈值着色：磨损≥80 红、≥60 黄；介质错误>0 红）
-  + 三张实时曲线（吞吐/IOPS/延迟，读蓝写橙双线，60 点滚动，前端 3s 轮询可调）。
-- session_id 变化（daemon 重启）自动清空滚动缓冲；深/浅主题跟随系统并可切换。
+- **概览层**：SSD 物理盘数 / 物理总容量 / 平均使用率 / 健康状态 / 最高磨损。
+- **盘组层**：大框 = RAID 逻辑盘（设备名、"逻辑盘"徽章、型号、容量、使用率条；点击
+  展开三张实时曲线——吞吐/IOPS/延迟，读蓝写橙双线，60 点滚动）；内嵌小框 = 物理 SSD
+  （健康灯、温度、累计写入、磨损条；点击展开 SMART 属性表）。直连盘为独立卡片，
+  同时具备两者，一次点击展开 SMART + 曲线。
+- **详情层**：SMART 属性表（阈值着色：磨损≥80 红、≥60 黄；介质错误>0 红）+ 曲线区，
+  按当前选中对象的条件显隐。
+- session_id 变化（daemon 重启）自动清空滚动缓冲；深/浅主题跟随系统并可切换；
+  页面顶部有拓扑说明提示文案。
 
 ### 3.4 采集端（daemon 侧，见对应文件）
 
@@ -158,7 +192,8 @@ RAID 物理盘的 SMART 读取要求 smartctl 可用且有相应权限（root）
 | `internal/source/smartctl/health_test.go` | scan/JSON 解析（真机 ATA/SCSI fixture + NVMe 标准结构）、缓存/负缓存、传输层缺省字段 |
 | `internal/source/sys/sys_test.go` | Rotational、BlockNames、DMName/DMSlaves |
 | `internal/collectors/disk/ssd_metrics_test.go` | 明细指标产出（直连+RAID+逻辑卷降级）、整盘使用率聚合（LVM 场景）、归属解析 |
-| `features/ssd/filter_test.go` | 三层视图组装（RAID 成员/逻辑卷/故障盘/空输入） |
+| `features/snapshot/hwinfo_test.go` | disk_info 的 media/kind 标签（有/无 RAID 通道两种场景、厂商识别路径） |
+| `features/ssd/filter_test.go` | 分组组装（RAID 分组/直连盘/RAID1 歧义/无法匹配/故障盘/空输入）、容量推断容差 |
 | `features/ssd/handler_test.go` | API 200/503、SPA/静态资源、指标 JSON 形态往返 |
 | `features/ssd/sole_scope_test.go` | 唯一启用 ssd 时全部所需指标在白名单内；非按盘指标被排除 |
 
@@ -174,6 +209,9 @@ RAID 物理盘的 SMART 读取要求 smartctl 可用且有相应权限（root）
 | 磨损归一化 | NVMe percentage_used；ATA `100 - Wear_Leveling_Count 归一值` | 两条传输链的主流约定；未知厂商显示 N/A |
 | 温度来源 | JSON `temperature.current` | smartctl 已归一化（ATA 原始值可能是打包的乱码） |
 | 旧 `-H` 路径 | 启用明细时让位 | 防止 smart_status/smart_temperature 双份产出；旧路径保留供未启用 ssd 的场景 |
+| 物理/逻辑判定 | kind 标签 + 阵列卡厂商名单 | 逻辑卷以阵列卡 vendor 上报（AVAGO 等）；直连盘上报 ATA/盘厂名；NVMe 恒为物理 |
+| LD→PD 归属 | 容量推断（±1%，最小子集，歧义即弃） | 权威映射在 RAID 卡固件里需 storcli（不引入）；容量推断零依赖且覆盖主流配置 |
+| 页面布局 | 逻辑盘大框嵌物理盘小框 | 使用率/IO 属逻辑层、SMART 属物理层，嵌套结构直观表达拓扑；直连盘独立卡片全量展示 |
 | 历史曲线 | 前端 60 点滚动缓冲 | snapshot history 只有跨盘 max 序列，无 per-device 历史 |
 | 端口 | :19324 | 19320 exporter / 19321 faultsub / 19322 web / 19323 dfee 顺延 |
 

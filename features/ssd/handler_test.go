@@ -33,7 +33,7 @@ func TestHandleAPI(t *testing.T) {
 	dir := t.TempDir()
 	writeSnapshot(t, dir,
 		`{"component":"disk","name":"disk_info","value":960.2,"unit":"GB",`+
-			`"labels":{"device":"megaraid,0","media":"ssd","model":"SAMSUNG MZ7LH960HAJR-00005","interface":"SATA"},`+
+			`"labels":{"device":"megaraid,0","media":"ssd","kind":"physical","model":"SAMSUNG MZ7LH960HAJR-00005","interface":"SATA"},`+
 			`"timestamp":"2026-09-23T10:00:00+08:00"}`,
 		`{"component":"disk","name":"smart_wear_percent","value":1,"unit":"%",`+
 			`"labels":{"device":"megaraid,0"},"timestamp":"2026-09-23T10:00:00+08:00"}`)
@@ -64,11 +64,18 @@ func TestHandleAPI(t *testing.T) {
 	if out.Overview.SSDCount != 1 || out.Overview.MaxWearPercent != 1 {
 		t.Errorf("overview: %+v", out.Overview)
 	}
-	if len(out.Disks) != 1 || out.Disks[0].Device != "megaraid,0" {
-		t.Fatalf("disks: %+v", out.Disks)
+	if len(out.Groups) != 1 {
+		t.Fatalf("groups: %+v", out.Groups)
 	}
-	if out.Disks[0].SMART == nil || out.Disks[0].SMART.WearPercent == nil || *out.Disks[0].SMART.WearPercent != 1 {
-		t.Errorf("disk smart: %+v", out.Disks[0].SMART)
+	g := out.Groups[0]
+	if g.Logical != nil {
+		t.Errorf("standalone physical should have no logical wrapper, got %+v", g.Logical)
+	}
+	if len(g.Members) != 1 || g.Members[0].Device != "megaraid,0" {
+		t.Fatalf("group members: %+v", g.Members)
+	}
+	if g.Members[0].SMART == nil || g.Members[0].SMART.WearPercent == nil || *g.Members[0].SMART.WearPercent != 1 {
+		t.Errorf("member smart: %+v", g.Members[0].SMART)
 	}
 }
 
@@ -139,7 +146,7 @@ func TestMetricShapeRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	specs := `{"component":"disk","name":"disk_info","value":100,"unit":"GB",` +
-		`"labels":{"device":"megaraid,0","media":"ssd","model":"M"},"timestamp":"2026-09-23T10:00:00+08:00"}`
+		`"labels":{"device":"megaraid,0","media":"ssd","kind":"physical","model":"M"},"timestamp":"2026-09-23T10:00:00+08:00"}`
 	writeSnapshot(t, dir, specs, string(data))
 
 	h := NewHandler(dir)
@@ -150,12 +157,13 @@ func TestMetricShapeRoundTrip(t *testing.T) {
 	if g.SessionID != "1690000000" {
 		t.Errorf("global session: %+v", g)
 	}
-	disks, ov := buildDiskViews(c.Specs, c.Metrics)
-	if len(disks) != 1 {
-		t.Fatalf("expected 1 disk, got %d", len(disks))
+	groups, ov := buildGroups(c.Specs, c.Metrics)
+	if len(groups) != 1 || len(groups[0].Members) != 1 {
+		t.Fatalf("expected 1 standalone group, got %+v", groups)
 	}
-	if disks[0].SMART == nil || disks[0].SMART.Temperature == nil || *disks[0].SMART.Temperature != 37 {
-		t.Errorf("round-tripped smart: %+v", disks[0].SMART)
+	member := groups[0].Members[0]
+	if member.SMART == nil || member.SMART.Temperature == nil || *member.SMART.Temperature != 37 {
+		t.Errorf("round-tripped smart: %+v", member.SMART)
 	}
 	if ov.SSDCount != 1 {
 		t.Errorf("overview: %+v", ov)
