@@ -1,0 +1,72 @@
+{
+  "json_format_version": [1, 0],
+  "smartctl": {
+    "version": [7, 2],
+    "svn_revision": "5155",
+    "platform_info": "x86_64-linux-6.1.0",
+    "build_info": "(local build)",
+    "argv": ["smartctl", "-j", "-a", "/dev/nvme0"],
+    "exit_status": 0
+  },
+  "device": {
+    "name": "/dev/nvme0",
+    "info_name": "/dev/nvme0",
+    "type": "nvme",
+    "protocol": "NVMe"
+  },
+  "model_name": "SAMSUNG MZQL2960HCJR-00A07",
+  "serial_number": "S64FNE0R512345",
+  "firmware_version": "GDC5602Q",
+  "nvme_pci_vendor": {
+    "id": 5197,
+    "subsystem_id": 5197
+  },
+  "nvme_ieee_oui_identifier": 9528,
+  "nvme_controller_id": "4108",
+  "nvme_number_of_namespaces": 1,
+  "nvme_namespaces": [
+    {
+      "id": 1,
+      "size": 1920383418,
+      "capacity": 1920383418,
+      "utilization": 1753098606,
+      "formatted_lba_size": 512,
+      "eui64": {
+        "oui": 9528,
+        "ext_id": 12345678901
+      }
+    }
+  ],
+  "user_capacity": { "blocks": 1920383418, "bytes": 983051430912 },
+  "logical_block_size": 512,
+  "rotation_rate": 0,
+  "smart_status": {
+    "passed": true,
+    "nvme": {
+      "value": 0
+    }
+  },
+  "temperature": { "current": 42 },
+  "power_on_time": { "hours": 8750 },
+  "power_cycle_count": 34,
+  "nvme_smart_health_information_log": {
+    "critical_warning": 0,
+    "temperature": 42,
+    "available_spare": 100,
+    "available_spare_threshold": 10,
+    "percentage_used": 6,
+    "data_units_read": 12345678,
+    "data_units_written": 23456789,
+    "host_reads": 98765432,
+    "host_writes": 87654321,
+    "busy_power_cycles": 12,
+    "power_cycles": 34,
+    "power_on_hours": 8750,
+    "unsafe_shutdowns": 7,
+    "media_errors": 0,
+    "num_err_log_entries": 12,
+    "warning_temp_time": 0,
+    "critical_comp_time": 0,
+    "temperature_sensors": [42, 41]
+  }
+}

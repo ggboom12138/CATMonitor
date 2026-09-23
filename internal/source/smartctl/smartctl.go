@@ -29,6 +29,17 @@ type Source interface {
 	// Info returns parsed `smartctl -a /dev/<dev>` identity fields (model,
 	// serial, firmware, size, interface). Cached per device for cacheTTL.
 	Info(dev string) (*DiskInfo, error)
+	// Scan enumerates devices via `smartctl --scan -j`, including RAID
+	// passthrough channels (e.g. Name "/dev/bus/0" + Type "megaraid,0").
+	// Cached for cacheTTL; nil when smartctl fails (negative cached).
+	Scan() []ScanEntry
+	// HealthJSON returns the vendor-neutral `smartctl -j -a` health snapshot
+	// of one device. devPath is the full device path (e.g. "/dev/sda" or a
+	// scan entry name); devType is the optional `-d` selector (e.g.
+	// "megaraid,0") for devices behind a RAID controller. Cached per
+	// devPath+devType for cacheTTL; nil on failure (negative cached) so
+	// callers can degrade gracefully.
+	HealthJSON(devPath, devType string) *HealthInfo
 	// Available reports whether smartctl is on PATH.
 	Available() bool
 }
@@ -68,14 +79,20 @@ func realInfoFetch(dev string) (string, error) {
 }
 
 type defaultSource struct {
-	mu          sync.Mutex
-	cache       map[string]string
-	cachedAt    map[string]time.Time
-	infoCache   map[string]string
+	mu           sync.Mutex
+	cache        map[string]string
+	cachedAt     map[string]time.Time
+	infoCache    map[string]string
 	infoCachedAt map[string]time.Time
-	cacheTTL    time.Duration
-	fetch       fetcher
-	infoFetch   fetcher
+	scanCache    string
+	scanCachedAt time.Time
+	jsonCache    map[string]string
+	jsonCachedAt map[string]time.Time
+	cacheTTL     time.Duration
+	fetch        fetcher
+	infoFetch    fetcher
+	scanFetch    scanFetcher
+	jsonFetch    jsonFetcher
 }
 
 var defaultSrc = &defaultSource{
@@ -83,9 +100,13 @@ var defaultSrc = &defaultSource{
 	cachedAt:     make(map[string]time.Time),
 	infoCache:    make(map[string]string),
 	infoCachedAt: make(map[string]time.Time),
+	jsonCache:    make(map[string]string),
+	jsonCachedAt: make(map[string]time.Time),
 	cacheTTL:     defaultCacheTTL,
 	fetch:        realFetch,
 	infoFetch:    realInfoFetch,
+	scanFetch:    realScanFetch,
+	jsonFetch:    realJSONFetch,
 }
 
 func Default() Source { return defaultSrc }
@@ -113,6 +134,12 @@ func ResetFetcher() {
 	defaultSrc.infoFetch = realInfoFetch
 	defaultSrc.infoCache = make(map[string]string)
 	defaultSrc.infoCachedAt = make(map[string]time.Time)
+	defaultSrc.scanFetch = realScanFetch
+	defaultSrc.scanCache = ""
+	defaultSrc.scanCachedAt = time.Time{}
+	defaultSrc.jsonFetch = realJSONFetch
+	defaultSrc.jsonCache = make(map[string]string)
+	defaultSrc.jsonCachedAt = make(map[string]time.Time)
 }
 
 func (s *defaultSource) Available() bool {

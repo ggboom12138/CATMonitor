@@ -1,0 +1,59 @@
+{
+  "json_format_version": [
+    1,
+    0
+  ],
+  "smartctl": {
+    "version": [
+      7,
+      2
+    ],
+    "svn_revision": "5155",
+    "platform_info": "aarch64-linux-5.10.0-60.18.0.50.oe2203.aarch64",
+    "build_info": "(local build)",
+    "argv": [
+      "smartctl",
+      "--scan",
+      "-j"
+    ],
+    "exit_status": 0
+  },
+  "devices": [
+    {
+      "name": "/dev/sda",
+      "info_name": "/dev/sda",
+      "type": "scsi",
+      "protocol": "SCSI"
+    },
+    {
+      "name": "/dev/sdb",
+      "info_name": "/dev/sdb",
+      "type": "scsi",
+      "protocol": "SCSI"
+    },
+    {
+      "name": "/dev/bus/0",
+      "info_name": "/dev/bus/0 [megaraid_disk_00]",
+      "type": "megaraid,0",
+      "protocol": "SCSI"
+    },
+    {
+      "name": "/dev/bus/0",
+      "info_name": "/dev/bus/0 [megaraid_disk_01]",
+      "type": "megaraid,1",
+      "protocol": "SCSI"
+    },
+    {
+      "name": "/dev/bus/0",
+      "info_name": "/dev/bus/0 [megaraid_disk_04]",
+      "type": "megaraid,4",
+      "protocol": "SCSI"
+    },
+    {
+      "name": "/dev/bus/0",
+      "info_name": "/dev/bus/0 [megaraid_disk_05]",
+      "type": "megaraid,5",
+      "protocol": "SCSI"
+    }
+  ]
+}
