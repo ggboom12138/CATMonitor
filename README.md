@@ -15,7 +15,7 @@ CATMonitor 是 CAT (Computing Availability Tools) 系列软件之一，用于采
 
 ## 功能特性
 
-- **多部件采集**：CPU / 内存 / 硬盘 / GPU / NPU / 网卡 / 机箱 共 7 个部件，**216 个指标**（含 NPU 掉卡检测 `card_drop`/`error_code`/进程信息 `process_info`、Disk 累计 raw counters、Network `rx/tx_bytes_total`，详见 [指标清单](docs/CATMonitor_indi_list.md)）
+- **多部件采集**：CPU / 内存 / 硬盘 / GPU / NPU / 网卡 / 机箱 共 7 个部件，**227 个指标**（含 NPU 掉卡检测 `card_drop`/`error_code`/进程信息 `process_info`、Disk 累计 raw counters、Network `rx/tx_bytes_total`，详见 [指标清单](docs/CATMonitor_indi_list.md)）
 - **健康度评估**：基于采集指标自动计算 0-100 健康分，自动检测 GPU/NPU 切换权重方案
 - **可靠性压测**：Linux 上显式运行 STREAM / HPL / HPCG / Ascend NPU Burn；CLI 与本机 Web 共享作业、报告和互斥锁，结果不直接计入健康总分
 - **Snapshot 统一生产**：daemon 作为唯一 snapshot 生产者，产出 per-component `snapshot_<comp>.json` + 全局 `snapshot.json`（health/collectors/intervals/system_specs）；只读特性（web/dfee）消费快照而不再各自采集，避免重复跑硬件
@@ -28,6 +28,7 @@ CATMonitor 是 CAT (Computing Availability Tools) 系列软件之一，用于采
 - **采集粒度控制**：`collection.min_priority` 配置（low/medium/high）按优先级阈值预过滤采集，采集器经 `AnyWanted` DI 在执行前跳过无需采集的指标组，降低开销
 - **故障订阅推送（faultsub）**：opt-in 特性，对采集到的 NPU 指标做故障判定（卡掉线/健康状态/错误码/HBM UCE/RoCE 链路等），经 **HTTP Webhook** 向已订阅的外部故障管理者推送 `FaultEvent`，并提供订阅注册/快照/事件回补 REST API（`:19321`）。零新依赖（`net/http`），默认关闭
 - **落后节点 KPI 输出（stragglerout）**：opt-in 特性，作为 daemon 的 Storage 插件，把每次采集到的 NPU KPI 指标（温度/功耗/AICore 频率与利用率/HBM 利用率/带宽/RoCE 错误等）按"每时刻×每卡"聚合追加写为日级 JSONL，供 straggler 慢节点检测器消费，替代其自带 `kpi_collect.sh`。默认关闭
+- **SSD 监控（ssd）**：opt-in 特性，独立 `catmonitor-ssd` 二进制，**只读消费** snapshot 渲染 SSD 按盘视图（SMART 明细/整盘使用率/读写状态），覆盖直连盘与 RAID 卡（megaraid）后面的物理盘，三层页面（概览/盘卡片/单盘详情）+ 实时曲线，默认端口 19324；指标全按盘（device 标签）。默认关闭
 - **来源层架构**：`internal/source/`（15 包）抽象数据获取与解析，采集器不直接读文件/执行命令，无硬件时优雅降级
 - **跨平台**：Linux (x86_64 / arm64) / Windows (x86_64)，构建标签隔离平台代码；纯 Go 构建无架构限制，Linux/arm64 可原生构建运行（NPU DCMI 经 `-tags dcmi` 在 arm64 原生编译，容器化镜像已提供 arm64 制品）
 - **易扩展**：新增部件采集器只需实现统一接口并注册，核心代码零修改
@@ -48,7 +49,7 @@ CATMonitor 是 CAT (Computing Availability Tools) 系列软件之一，用于采
 ## 快速开始
 
 ```bash
-# 编译（daemon + web + dfee 三个二进制）
+# 编译（daemon + web + dfee + ssd 四个二进制）
 go version             # 必须为 Go 1.23.4 或更高版本
 make all               # 或分别 make build / make web / make dfee
 
@@ -63,7 +64,7 @@ cp configs/catmonitor.yaml /etc/catmonitor/catmonitor.yaml
 #   在 /etc/catmonitor/catmonitor.yaml 中设：
 #     snapshot.enabled: true
 #     snapshot.dir: /var/lib/catmonitor/snapshot
-#     features: [web, dfee]   # 按特性所需指标做 scope 白名单采集（可选）
+#     features: [web, dfee]   # 按特性所需指标做 scope 白名单采集（可选；加 "ssd" 开启 SSD 监控采集）
 
 # 启动守护进程（采集 + 健康度 + Prometheus :19320 + snapshot 生产）
 catmonitor daemon
@@ -71,6 +72,8 @@ catmonitor daemon
 # 启动只读消费者（消费 daemon 产出的 snapshot，不自行采集）
 catmonitor-web -addr :19322 -snapshot-dir /var/lib/catmonitor/snapshot
 catmonitor-dfee -addr :19323 -snapshot-dir /var/lib/catmonitor/snapshot
+# SSD 监控页面需在 catmonitor.yaml 的 features 列表加入 "ssd"（默认关闭）
+catmonitor-ssd -addr :19324 -snapshot-dir /var/lib/catmonitor/snapshot
 
 # 单次采集 / 健康检查 / 采集器列表
 catmonitor collect -o table
@@ -133,6 +136,7 @@ catmonitor stress cancel --job JOB_ID
 | [features/exporter/exporter_SPEC.md](features/exporter/exporter_SPEC.md) | Prometheus 导出模块规格 |
 | [features/faultsub/faultsub_SPEC.md](features/faultsub/faultsub_SPEC.md) | 故障订阅推送模块规格 |
 | [features/stragglerout/stragglerout_SPEC.md](features/stragglerout/stragglerout_SPEC.md) | 落后节点 KPI 输出模块规格 |
+| [features/ssd/SSD_SPEC.md](features/ssd/SSD_SPEC.md) | SSD 监控模块规格 |
 
 ## 项目结构
 
@@ -153,7 +157,8 @@ CATMonitor/
 │   ├── dfee/                #   能效监控（catmonitor-dfee 独立二进制，package main，只读消费 snapshot + 内置 Prometheus exporter :9333）
 │   ├── exporter/            #   Prometheus 导出（CachingStorage + /metrics）
 │   ├── faultsub/            #   故障订阅推送（FaultStorage + HTTP Webhook + REST）
-│   └── stragglerout/        #   落后节点 KPI 文件输出（StragglerStorage + KPIWriter）
+│   ├── stragglerout/        #   落后节点 KPI 文件输出（StragglerStorage + KPIWriter）
+│   └── ssd/                 #   SSD 监控（catmonitor-ssd 独立二进制，只读消费 snapshot，按盘视图）
 ├── configs/                 # 默认配置（catmonitor.yaml + metrics.yaml）
 ├── docker/                  # 容器化（Generic/GPU/NPU Control + CPU/NPU workload + Compose/手工指南）
 ├── docs/                    # 文档（指标清单 / 使用手册 / 测试报告）

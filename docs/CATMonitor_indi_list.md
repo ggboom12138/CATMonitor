@@ -3,7 +3,7 @@
 > 本文档列出 CATMonitor 支持的全部服务器运行指标。
 > 每个指标包含：优先级、默认采集周期、默认是否采集、数据来源、采集方法、输出示例。
 >
-> **版本**: v0.3.6 ｜ **更新日期**: 2026-09-08 ｜ **指标总数**: 216（High 26 / Medium 143 / Low 47）
+> **版本**: v0.3.6 ｜ **更新日期**: 2026-09-08 ｜ **指标总数**: 227（High 26 / Medium 154 / Low 47）
 > **来源层**: 全部 7 个采集器（cpu/memory/disk/network/gpu/npu/chassis）已接入 `internal/source/` 来源层（14 包：proc/sys/ipmi/lscpu/mce/dmesg/dmidecode/statfs/smartctl + dcmi/npu_smi/hccn_tool/nvidia_smi + lspci）。
 > **指标采集目录**：`internal/metrics` + `configs/metrics.yaml`（默认目录）+ 模块自有 `metrics.yaml` 覆盖；High/Medium + 静态身份默认采、Low 诊断默认不采。v0.3.3 起 `collection.min_priority`（low/medium/high）按优先级阈值预过滤；v0.3.3 后续 `features` 配置 + `SetFeatureScope` 白名单（各 feature `metrics.yaml` 并集），非空时只采白名单内且 `priority ≥ min_priority` 指标，`AnyWanted` 跳过全 out-of-scope 子方法。
 > **特性模块**：`features/snapshot`（snapshot 统一生产，daemon 唯一写者，供只读特性消费）+ `features/web`（独立二进制 `catmonitor-web`，只读消费 snapshot，:19322）+ `features/dfee`（独立二进制 `catmonitor-dfee`，能效监控 34 张实时图表 + 内置 Prometheus exporter :9333/metrics + CSV 落盘 + Grafana Dashboard，只读消费 snapshot，:19323）+ `features/stress`（可靠性压测 STREAM/HPL/HPCG/NPU Burn，CLI/Web 共享报告与互斥锁，:19322/stress/）+ `features/exporter`（daemon 内置 Prometheus 导出 :19320/metrics）+ `features/faultsub`（故障订阅推送 :19321）+ `features/stragglerout`（落后节点 KPI 文件输出，opt-in，供 straggler 慢节点检测器消费）。
@@ -26,12 +26,12 @@
 |------|--------|------|--------|-----|
 | CPU | 39 | 4 | 21 | 14 |
 | Memory | 20 | 4 | 11 | 5 |
-| Disk | 14 | 1 | 9 | 4 |
+| Disk | 25 | 1 | 20 | 4 |
 | GPU | 8 | 3 | 4 | 1 |
 | NPU | 123 | 11 | 91 | 21 |
 | Network | 7 | 1 | 5 | 1 |
 | Chassis | 5 | 2 | 2 | 1 |
-| **合计** | **216** | **26** | **143** | **47** |
+| **合计** | **227** | **26** | **154** | **47** |
 
 ---
 
@@ -731,6 +731,17 @@ CPU 采集器通过 `/proc`、`/sys`、`lscpu`、`ipmitool`、`/var/log`(mcelog/
 | 3.11 | written_sectors_total | 磁盘写扇区总数 | Medium | 5s | 是 | - | /proc/diskstats (field 7) |
 | 3.12 | read_time_total | 磁盘读耗时总计 | Medium | 5s | 是 | ms | /proc/diskstats (field 4) |
 | 3.13 | write_time_total | 磁盘写耗时总计 | Medium | 5s | 是 | ms | /proc/diskstats (field 8) |
+| 3.14 | device_space_usage | 整盘空间使用率 | Medium | 5s | 是 | % | statfs + dm/分区归属聚合 |
+| 3.15 | device_space_detail | 整盘空间明细 | Medium | 5s | 是 | GB | statfs + dm/分区归属聚合 |
+| 3.16 | smart_wear_percent | SSD磨损百分比 | Medium | 60s | 否 | % | smartctl -j -a |
+| 3.17 | smart_power_on_hours | 累计通电时长 | Medium | 60s | 否 | h | smartctl -j -a |
+| 3.18 | smart_power_cycles | 累计通电次数 | Medium | 60s | 否 | 次 | smartctl -j -a |
+| 3.19 | smart_data_written_total | 累计写入量(TBW) | Medium | 60s | 否 | GB | smartctl -j -a |
+| 3.20 | smart_data_read_total | 累计读取量 | Medium | 60s | 否 | GB | smartctl -j -a |
+| 3.21 | smart_media_errors | 介质错误数 | Medium | 60s | 否 | 次 | smartctl -j -a (NVMe) |
+| 3.22 | smart_reallocated_sectors | 重映射扇区数 | Medium | 60s | 否 | 个 | smartctl -j -a (ATA) |
+| 3.23 | smart_available_spare | 可用备件百分比 | Medium | 60s | 否 | % | smartctl -j -a (NVMe) |
+| 3.24 | smart_unsafe_shutdowns | 意外断电次数 | Medium | 60s | 否 | 次 | smartctl -j -a (NVMe) |
 
 ### 指标详情
 
@@ -864,6 +875,27 @@ CPU 采集器通过 `/proc`、`/sys`、`lscpu`、`ipmitool`、`/var/log`(mcelog/
 - **输出示例**：
 ```json
 {"component":"disk","name":"write_time_total","value":318424,"unit":"ms","labels":{"device":"sda"},"timestamp":"2026-07-10T10:30:00Z"}
+```
+
+#### 3.14 device_space_usage / 3.15 device_space_detail（整盘空间使用率/明细）
+
+- **数据来源**：`statfs` 系统调用 + `/sys/block/dm-*/slaves` 设备归属解析
+- **采集方法**：把每个挂载点的文件系统归属到其所在的整盘（`/dev/sdb2`→`sdb`；`/dev/mapper/X`→dm-N→slaves 底层分区→物理盘；`nvme0n1p2`→`nvme0n1`），一块盘的所有文件系统容量/已用量加总，得到该盘的使用率与 total/used/available 明细。跨盘条带的 LV 无法归属唯一盘时跳过。**与 3.1/3.8 的挂载点粒度不同，这是按盘粒度**（ssd 特性专用）
+- **Labels**：`device`（"sdb", "nvme0n1", ...）；detail 另有 `field`（total/used/available）
+- **输出示例**：
+```json
+{"component":"disk","name":"device_space_usage","value":61.18,"unit":"%","labels":{"device":"sdb"},"timestamp":"2026-09-23T10:00:00Z"}
+```
+
+#### 3.16 ~ 3.24 smart_*（按盘 SMART 明细，ssd 特性）
+
+- **数据来源**：`smartctl -j -a`（JSON）。覆盖直连盘（`/dev/sdX`、`/dev/nvmeXnY`）与 RAID 穿透通道（`smartctl --scan` 发现的 `megaraid,N` 等，device 标签即通道名如 `megaraid,0`）。结果 60s 缓存 + 失败负缓存
+- **采集方法**：NVMe health log 与 ATA SMART 属性表归一化为统一指标；传输层不提供的字段不产出（SATA 无 media_errors/available_spare/unsafe_shutdowns，NVMe 无 reallocated_sectors，SCSI/SAS 只有 status/温度/通电时长）。磨损 = NVMe `percentage_used` 或 ATA `100 - Wear_Leveling_Count 归一值`；TBW = NVMe `data_units_written×512000` 或 ATA `Total_LBAs_Written×逻辑块大小`；温度一律取归一化的 `temperature.current`
+- **Labels**：`device`（"sdb", "megaraid,0", ...）；smart_status 另有 `status`（PASSED/FAILED）
+- **输出示例**：
+```json
+{"component":"disk","name":"smart_wear_percent","value":1,"unit":"%","labels":{"device":"megaraid,0"},"timestamp":"2026-09-23T10:00:00Z"}
+{"component":"disk","name":"smart_data_written_total","value":5500.88,"unit":"GB","labels":{"device":"megaraid,0"},"timestamp":"2026-09-23T10:00:00Z"}
 ```
 
 ---
@@ -2026,7 +2058,7 @@ FAN1 R Speed      | 9300.000   | RPM        | ok
 
 ## 附录B：已实现采集指标清单
 
-> 以下 216 个指标均已实现并通过测试，按部件分类汇总。其中 CPU 39、Memory 20、Disk 14（含累计 raw counters + `space_detail`）、GPU 8（含 `memory_detail`）、NPU 123 个指标（含 `card_drop` 掉卡检测 + `process_info`/`process_total` 进程信息 + `npu_util` 整体利用率），Network 7（含 `rx/tx_bytes_total`），Chassis 5 个指标，且全部 7 个采集器（chassis/cpu/memory/disk/network/gpu/npu）已接入来源层(source layer，14 包含 lspci)。NPU 采用 device 并行采集，DCMI 指标通过 CGo（`-tags dcmi`）调用 libdcmi.so。
+> 以下 227 个指标均已实现并通过测试，按部件分类汇总。其中 CPU 39、Memory 20、Disk 25（含累计 raw counters + `space_detail` + 11 项按盘 SSD 指标）、GPU 8（含 `memory_detail`）、NPU 123 个指标（含 `card_drop` 掉卡检测 + `process_info`/`process_total` 进程信息 + `npu_util` 整体利用率），Network 7（含 `rx/tx_bytes_total`），Chassis 5 个指标，且全部 7 个采集器（chassis/cpu/memory/disk/network/gpu/npu）已接入来源层(source layer，14 包含 lspci)。NPU 采用 device 并行采集，DCMI 指标通过 CGo（`-tags dcmi`）调用 libdcmi.so。
 
 ### CPU（39 个）
 
@@ -2281,15 +2313,15 @@ FAN1 R Speed      | 9300.000   | RPM        | ok
 
 ### 统计汇总
 
-全部 7 个部件共 216 项指标（High 26 / Medium 143 / Low 47），与文档开头「汇总统计」一致：
+全部 7 个部件共 227 项指标（High 26 / Medium 154 / Low 47），与文档开头「汇总统计」一致：
 
 | 部件 | 指标数 | High | Medium | Low |
 |------|--------|------|--------|-----|
 | CPU | 39 | 4 | 21 | 14 |
 | Memory | 20 | 4 | 11 | 5 |
-| Disk | 14 | 1 | 9 | 4 |
+| Disk | 25 | 1 | 20 | 4 |
 | GPU | 8 | 3 | 4 | 1 |
 | NPU | 123 | 11 | 91 | 21 |
 | Network | 7 | 1 | 5 | 1 |
 | Chassis | 5 | 2 | 2 | 1 |
-| **合计** | **216** | **26** | **143** | **47** |
+| **合计** | **227** | **26** | **154** | **47** |

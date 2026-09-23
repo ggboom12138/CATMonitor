@@ -3,7 +3,7 @@
 	test-stress-race test-stress-e2e test-stress-build \
 	test-stress-container-e2e \
 	test-stress-build-cpu test-stress-build-npu test-stress-deployment \
-	test-stress-audit audit-stress-release install-stress-resources lint clean web dfee
+	test-stress-audit audit-stress-release install-stress-resources lint clean web dfee ssd
 
 GO ?= go
 BIN=bin/catmonitor
@@ -19,7 +19,7 @@ BIN=bin/catmonitor
 DCMI_HDR ?= /usr/local/Ascend/driver/include/dcmi_interface_api.h
 DCMITAG  ?= $(if $(wildcard $(DCMI_HDR)),-tags dcmi,)
 
-all: build web dfee
+all: build web dfee ssd
 
 build:
 	@echo "build daemon (dcmi: $(if $(DCMITAG),on,off))"
@@ -33,6 +33,10 @@ web:
 dfee:
 	@mkdir -p bin
 	$(GO) build -o bin/catmonitor-dfee ./features/dfee
+
+ssd:
+	@mkdir -p bin
+	$(GO) build -o bin/catmonitor-ssd ./features/ssd
 
 test:
 	$(GO) test ./...

@@ -64,6 +64,9 @@ collection:  # Minimum priority to collect: low (all) | medium (skip Low) | high
 # min across the listed features' declared intervals (falling back to
 # collectors.<name>.interval for components no feature declares). Empty = use the
 # default catalog (configs/metrics.yaml) + collectors.interval only.
+# Available: web, dfee, health, ssd (SSD monitoring: per-disk SMART detail via
+# smartctl including RAID passthrough channels — add "ssd" to enable, see
+# features/ssd/SSD_SPEC.md).
 features: [web, dfee, health]
 
 # Fault subscription & push mechanism (features/faultsub). Default off; enable
@@ -97,7 +100,7 @@ straggler_output:
   flush_interval: 60s        # in-memory buffer flush cadence
 
 # Snapshot production (per-component snapshot_<comp>.json + global
-# snapshot.json), consumed by read-only features (web/dfee). Default off — when
+# snapshot.json), consumed by read-only features (web/dfee/ssd). Default off — when
 # off the daemon writes no snapshot files and behaves as before. When on, the
 # daemon is the sole snapshot producer; web must run as a read-only consumer
 # (no self-collection). See features/snapshot/.

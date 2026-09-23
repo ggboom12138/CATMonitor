@@ -29,6 +29,9 @@ storage:
 collection:
   min_priority: medium
 
+# Available features: web, dfee, health, ssd (per-disk SSD SMART monitoring,
+# including RAID passthrough channels; requires smartmontools in the container
+# image — see features/ssd/SSD_SPEC.md).
 features: [web, dfee, health]
 
 snapshot:

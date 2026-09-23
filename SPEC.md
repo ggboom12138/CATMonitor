@@ -54,6 +54,7 @@ CATMonitor 由采集核心与特性层组成。特性层各模块独立成包，
 | `features/exporter` | Prometheus 导出：CachingStorage 包装存储 + `/metrics` 端点 + 健康端点 | [exporter_SPEC.md](features/exporter/exporter_SPEC.md) |
 | `features/faultsub` | 故障订阅推送：NPU 故障判定（卡掉线/健康状态/错误码/HBM UCE/RoCE 链路） + HTTP Webhook 推送 + 订阅/快照/事件 REST API | [faultsub_SPEC.md](features/faultsub/faultsub_SPEC.md) |
 | `features/stragglerout` | 落后节点 KPI 输出：NPU KPI 时序按"每时刻×每卡"聚合追加写日级 JSONL，供 straggler 慢节点检测器消费 | [stragglerout_SPEC.md](features/stragglerout/stragglerout_SPEC.md) |
+| `features/ssd` | SSD 监控独立二进制：**只读消费** snapshot，按盘视图（SMART 明细/整盘使用率/读写状态，含 RAID 卡后物理盘），三层页面（概览+盘卡片+详情）+ 实时曲线，默认关闭 | [SSD_SPEC.md](features/ssd/SSD_SPEC.md) |
 | `features/stress` | 可靠性压测：daemon 唯一作业 Controller（`/run/catmonitor/control.sock`），经 Docker Executor 调用 workload 容器内 STREAM/HPL/HPCG/NPU Burn 插件；CLI/Web 查询、启动与取消；结果不计入健康总分 | [STRESS_SPEC.md](features/stress/STRESS_SPEC.md) |
 
 ---
