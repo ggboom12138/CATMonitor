@@ -109,11 +109,25 @@ func TestHWDiskInfo(t *testing.T) {
 	smartctl.SetInfoFetcher(func(dev string) (string, error) {
 		return readHWMock(t, "../../tests/testdata/smartctl-info-output.txt"), nil
 	})
+	smartctl.SetScanFetcher(func() (string, error) {
+		return readHWMock(t, "../../tests/testdata/smartctl-scan-json.txt"), nil
+	})
+	smartctl.SetJSONFetcher(func(devPath, devType string) (string, error) {
+		switch devType {
+		case "megaraid,0":
+			return readHWMock(t, "../../tests/testdata/smartctl-ata-json.txt"), nil
+		case "megaraid,4":
+			return readHWMock(t, "../../tests/testdata/smartctl-scsi-json.txt"), nil
+		}
+		return "", os.ErrPermission
+	})
 	defer smartctl.ResetFetcher()
 	c := newTestHW()
 	m := c.diskInfo(time.Now())
-	if len(m) != 2 {
-		t.Fatalf("expected 2 disks (sda+sdb), got %d", len(m))
+	// 2 direct devices (sda+sdb) + 2 RAID channels that answer (megaraid,0
+	// and megaraid,4); channels 1 and 5 fail and are skipped.
+	if len(m) != 4 {
+		t.Fatalf("expected 4 disks (sda+sdb+megaraid,0+megaraid,4), got %d: %+v", len(m), m)
 	}
 	sda := m[0]
 	if sda.Component != "disk" || sda.Name != "disk_info" || sda.Unit != "GB" {
@@ -131,6 +145,32 @@ func TestHWDiskInfo(t *testing.T) {
 	}
 	if m[1].Value < 1099 || m[1].Value > 1100 {
 		t.Errorf("sdb size(GB): got %v want ~1099.5", m[1].Value)
+	}
+	// media classification: sda rotational=1 (hdd), sdb rotational=0 (ssd).
+	byDev := map[string]collector.Metric{}
+	for _, mm := range m {
+		byDev[mm.Labels["device"]] = mm
+	}
+	if byDev["sda"].Labels["media"] != "hdd" {
+		t.Errorf("sda media: got %q want hdd", byDev["sda"].Labels["media"])
+	}
+	if byDev["sdb"].Labels["media"] != "ssd" {
+		t.Errorf("sdb media: got %q want ssd", byDev["sdb"].Labels["media"])
+	}
+	// RAID channel rows carry identity + media from the smartctl JSON.
+	raid0 := byDev["megaraid,0"]
+	if raid0.Labels["model"] != "SAMSUNG MZ7LH960HAJR-00005" {
+		t.Errorf("megaraid,0 model: %+v", raid0.Labels)
+	}
+	if raid0.Labels["media"] != "ssd" || raid0.Labels["interface"] != "SATA" {
+		t.Errorf("megaraid,0 media/interface: %+v", raid0.Labels)
+	}
+	if raid0.Value < 960 || raid0.Value > 961 {
+		t.Errorf("megaraid,0 size(GB): got %v want ~960.2", raid0.Value)
+	}
+	raid4 := byDev["megaraid,4"]
+	if raid4.Labels["media"] != "hdd" {
+		t.Errorf("megaraid,4 media: got %q want hdd", raid4.Labels["media"])
 	}
 }
 

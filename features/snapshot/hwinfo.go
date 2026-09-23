@@ -224,10 +224,13 @@ func (c *hwCollector) npuInfo(now time.Time) []collector.Metric {
 	return metrics
 }
 
-// diskInfo emits one disk_info metric per real block device. Device list, model
-// and capacity come from /sys/block (always available, no root); smartctl -a
-// only enriches serial/firmware/interface when smartmontools is present. The
-// value is the disk size in GB so the UI can sum capacities.
+// diskInfo emits one disk_info metric per real block device plus one per
+// RAID passthrough channel discovered via `smartctl --scan`. Device list,
+// model and capacity come from /sys/block (always available, no root);
+// smartctl only enriches serial/firmware/interface when smartmontools is
+// present. The `media` label classifies ssd/hdd/unknown so consumers (e.g.
+// the ssd feature UI) can filter. The value is the disk size in GB so the UI
+// can sum capacities.
 func (c *hwCollector) diskInfo(now time.Time) []collector.Metric {
 	devs, err := sys.Default().BlockDevices()
 	if err != nil {
@@ -238,6 +241,7 @@ func (c *hwCollector) diskInfo(now time.Time) []collector.Metric {
 		labels := map[string]string{
 			"device": bd.Name,
 			"model":  bd.Model,
+			"media":  mediaLabel(bd.Name),
 		}
 		if di, err := smartctl.Default().Info(bd.Name); err == nil && di != nil {
 			if di.Serial != "" {
@@ -260,7 +264,66 @@ func (c *hwCollector) diskInfo(now time.Time) []collector.Metric {
 			Timestamp: now,
 		})
 	}
+	metrics = append(metrics, raidDiskInfo(now)...)
 	return metrics
+}
+
+// raidDiskInfo emits disk_info rows for physical disks behind a RAID
+// controller, discovered via `smartctl --scan` passthrough channels (e.g.
+// "megaraid,0"). These devices do not exist under /sys/block, so identity
+// (model/serial/capacity/media) comes from the smartctl JSON snapshot.
+func raidDiskInfo(now time.Time) []collector.Metric {
+	src := smartctl.Default()
+	if !src.Available() {
+		return nil
+	}
+	var metrics []collector.Metric
+	for _, entry := range src.Scan() {
+		if !strings.Contains(entry.Type, ",") {
+			continue // plain bus entries are /sys/block devices covered above
+		}
+		hi := src.HealthJSON(entry.Name, entry.Type)
+		if hi == nil || hi.CapacityBytes == 0 {
+			continue
+		}
+		labels := map[string]string{
+			"device": entry.Type,
+			"media":  hi.Media,
+		}
+		if hi.Model != "" {
+			labels["model"] = hi.Model
+		}
+		if hi.Serial != "" {
+			labels["serial"] = hi.Serial
+		}
+		if hi.Firmware != "" {
+			labels["firmware"] = hi.Firmware
+		}
+		if hi.Interface != "" {
+			labels["interface"] = hi.Interface
+		}
+		metrics = append(metrics, collector.Metric{
+			Component: "disk", Name: "disk_info",
+			Value: roundFloat(float64(hi.CapacityBytes)/1e9, 1), Unit: "GB",
+			Labels:    labels,
+			Timestamp: now,
+		})
+	}
+	return metrics
+}
+
+// mediaLabel classifies a /sys/block device via its queue/rotational flag.
+// "unknown" when the file is absent (some RAID logical volumes).
+func mediaLabel(dev string) string {
+	rot, err := sys.Default().Rotational(dev)
+	switch {
+	case err != nil:
+		return "unknown"
+	case rot:
+		return "hdd"
+	default:
+		return "ssd"
+	}
 }
 
 // netInfo emits one net_info metric per non-loopback interface from /sys/class/net.
