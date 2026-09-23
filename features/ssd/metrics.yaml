@@ -1,0 +1,52 @@
+# SSD 监控特性的指标作用域（feature scope）。
+# daemon 读取本文件建立白名单：features 列表含 "ssd" 时，只采集此处声明
+# 且优先级 >= collection.min_priority 的 disk 指标；interval 参与各组件
+# 采集节奏（多 feature 取最小值）。
+# 约定：本特性消费的所有指标一律按盘（device 标签），非按盘指标不采集。
+components:
+  - component: disk
+    interval: 2s
+    metrics:
+      # ---- 整盘容量/使用率（collector 聚合，含 LVM 归属解析） ----
+      - name: device_space_usage
+        priority: High
+      - name: device_space_detail
+        priority: Medium
+      # ---- 读写状态（/proc/diskstats，按整盘） ----
+      - name: throughput
+        priority: Medium
+      - name: iops
+        priority: Medium
+      - name: read_latency
+        priority: Medium
+      - name: write_latency
+        priority: Medium
+      - name: read_sectors_total
+        priority: Medium
+      - name: written_sectors_total
+        priority: Medium
+      # ---- SMART 明细（smartctl -j -a，直连盘 + RAID 物理盘） ----
+      # smart_temperature 在默认目录为 Low，会被 min_priority: medium 过滤，
+      # 此处声明 High 抬高合并优先级后才能真正采集。
+      - name: smart_status
+        priority: High
+      - name: smart_temperature
+        priority: High
+      - name: smart_wear_percent
+        priority: High
+      - name: smart_power_on_hours
+        priority: High
+      - name: smart_power_cycles
+        priority: High
+      - name: smart_data_written_total
+        priority: High
+      - name: smart_data_read_total
+        priority: Medium
+      - name: smart_media_errors
+        priority: High
+      - name: smart_reallocated_sectors
+        priority: High
+      - name: smart_available_spare
+        priority: High
+      - name: smart_unsafe_shutdowns
+        priority: Medium

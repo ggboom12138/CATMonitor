@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CATMonitor SSD 监控</title>
+  <script>
+    // Set data-theme before the stylesheet loads to avoid a flash of the
+    // wrong theme. Manual choice (localStorage) wins; otherwise follow the
+    // OS preference.
+    (function () {
+      var t = null;
+      try { t = localStorage.getItem('ssd-theme'); } catch (e) {}
+      if (t !== 'dark' && t !== 'light') {
+        t = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      }
+      document.documentElement.setAttribute('data-theme', t);
+    })();
+  </script>
+  <link rel="stylesheet" href="/ssd/static/ssd.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <a href="/" class="brand-link">CATMonitor</a>
+      <span class="subtitle">SSD 监控</span>
+    </div>
+    <div class="controls">
+      <span class="info-label">更新 <b id="updateTime">--</b></span>
+      <span class="info-label">刷新间隔 <input type="number" id="intervalInput" min="1" step="1" value="3"> 秒</span>
+      <button id="applyBtn" class="btn">应用</button>
+      <button id="refreshBtn" class="btn btn-primary">立即刷新</button>
+      <button id="themeBtn" class="btn" title="切换深浅主题">🌙</button>
+    </div>
+  </header>
+
+  <div id="banner" class="banner hidden"></div>
+
+  <main>
+    <section id="overview" class="overview"></section>
+
+    <section class="section">
+      <h2 class="section-title">SSD 盘列表 <span id="diskCount" class="section-badge"></span></h2>
+      <div id="diskGrid" class="disk-grid"></div>
+    </section>
+
+    <section id="detailSection" class="section hidden">
+      <h2 class="section-title">单盘详情 <span id="detailDevice" class="section-badge"></span></h2>
+      <div class="detail-layout">
+        <div class="detail-card">
+          <h3 class="detail-card-title">SMART 健康</h3>
+          <table class="smart-table" id="smartTable"></table>
+        </div>
+        <div class="detail-charts">
+          <div class="chart-card">
+            <div class="chart-head"><span>读写吞吐 (MB/s)</span></div>
+            <canvas id="chartThroughput"></canvas>
+          </div>
+          <div class="chart-card">
+            <div class="chart-head"><span>读写 IOPS (次/s)</span></div>
+            <canvas id="chartIOPS"></canvas>
+          </div>
+          <div class="chart-card">
+            <div class="chart-head"><span>读写延迟 (ms)</span></div>
+            <canvas id="chartLatency"></canvas>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/ssd/static/ssd.js"></script>
+</body>
+</html>
