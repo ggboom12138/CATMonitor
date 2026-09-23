@@ -28,7 +28,7 @@ CATMonitor 是 CAT (Computing Availability Tools) 系列软件之一，用于采
 - **采集粒度控制**：`collection.min_priority` 配置（low/medium/high）按优先级阈值预过滤采集，采集器经 `AnyWanted` DI 在执行前跳过无需采集的指标组，降低开销
 - **故障订阅推送（faultsub）**：opt-in 特性，对采集到的 NPU 指标做故障判定（卡掉线/健康状态/错误码/HBM UCE/RoCE 链路等），经 **HTTP Webhook** 向已订阅的外部故障管理者推送 `FaultEvent`，并提供订阅注册/快照/事件回补 REST API（`:19321`）。零新依赖（`net/http`），默认关闭
 - **落后节点 KPI 输出（stragglerout）**：opt-in 特性，作为 daemon 的 Storage 插件，把每次采集到的 NPU KPI 指标（温度/功耗/AICore 频率与利用率/HBM 利用率/带宽/RoCE 错误等）按"每时刻×每卡"聚合追加写为日级 JSONL，供 straggler 慢节点检测器消费，替代其自带 `kpi_collect.sh`。默认关闭
-- **SSD 监控（ssd）**：opt-in 特性，独立 `catmonitor-ssd` 二进制，**只读消费** snapshot 渲染 SSD 按盘视图（SMART 明细/整盘使用率/读写状态），覆盖直连盘与 RAID 卡（megaraid）后面的物理盘，三层页面（概览/盘卡片/单盘详情）+ 实时曲线，默认端口 19324；指标全按盘（device 标签）。默认关闭
+- **SSD 监控（ssd）**：opt-in 特性，独立 `catmonitor-ssd` 二进制，**只读消费** snapshot 渲染 SSD 物理盘视图（SMART 明细），覆盖直连盘与 RAID 卡（megaraid）后面的物理盘；分组嵌套页面（逻辑盘大框显示使用率+IO 曲线，内嵌物理盘小框显示 SMART，容量推断建立归属），直连盘独立卡片全量展示，默认端口 19324；指标全按盘（device 标签）。默认关闭
 - **来源层架构**：`internal/source/`（15 包）抽象数据获取与解析，采集器不直接读文件/执行命令，无硬件时优雅降级
 - **跨平台**：Linux (x86_64 / arm64) / Windows (x86_64)，构建标签隔离平台代码；纯 Go 构建无架构限制，Linux/arm64 可原生构建运行（NPU DCMI 经 `-tags dcmi` 在 arm64 原生编译，容器化镜像已提供 arm64 制品）
 - **易扩展**：新增部件采集器只需实现统一接口并注册，核心代码零修改
