@@ -370,6 +370,61 @@ components:
         priority: Medium
         unit: "ms"
         static: false
+      - name: device_space_usage
+        cn_name: "整盘空间使用率"
+        priority: Medium
+        unit: "%"
+        static: false
+      - name: device_space_detail
+        cn_name: "整盘空间明细"
+        priority: Medium
+        unit: "GB"
+        static: false
+      - name: smart_wear_percent
+        cn_name: "SSD磨损百分比"
+        priority: Medium
+        unit: "%"
+        static: false
+      - name: smart_power_on_hours
+        cn_name: "累计通电时长"
+        priority: Medium
+        unit: "h"
+        static: false
+      - name: smart_power_cycles
+        cn_name: "累计通电次数"
+        priority: Medium
+        unit: "次"
+        static: false
+      - name: smart_data_written_total
+        cn_name: "累计写入量"
+        priority: Medium
+        unit: "GB"
+        static: false
+      - name: smart_data_read_total
+        cn_name: "累计读取量"
+        priority: Medium
+        unit: "GB"
+        static: false
+      - name: smart_media_errors
+        cn_name: "介质错误数"
+        priority: Medium
+        unit: "次"
+        static: false
+      - name: smart_reallocated_sectors
+        cn_name: "重映射扇区数"
+        priority: Medium
+        unit: "个"
+        static: false
+      - name: smart_available_spare
+        cn_name: "可用备件百分比"
+        priority: Medium
+        unit: "%"
+        static: false
+      - name: smart_unsafe_shutdowns
+        cn_name: "意外断电次数"
+        priority: Medium
+        unit: "次"
+        static: false
   - component: gpu
     metrics:
       - name: utilization

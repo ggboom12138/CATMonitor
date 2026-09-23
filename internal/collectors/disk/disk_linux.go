@@ -93,9 +93,20 @@ func (c *DiskCollector) Collect() ([]collector.Metric, error) {
 			metrics = append(metrics, ioErrMetrics...)
 		}
 	}
-	if collector.AnyWanted("disk", []string{"smart_status", "smart_temperature"}) {
+	if collector.AnyWanted("disk", []string{"smart_status", "smart_temperature"}) &&
+		!collector.AnyWanted("disk", detailedSmartNames) {
 		if smartMetrics, err := c.collectSMART(now); err == nil {
 			metrics = append(metrics, smartMetrics...)
+		}
+	}
+	if collector.AnyWanted("disk", detailedSmartNames) {
+		if smartMetrics, err := c.collectSMARTDetailed(now); err == nil {
+			metrics = append(metrics, smartMetrics...)
+		}
+	}
+	if collector.AnyWanted("disk", []string{"device_space_usage", "device_space_detail"}) {
+		if usageMetrics, err := c.collectDeviceUsage(now); err == nil {
+			metrics = append(metrics, usageMetrics...)
 		}
 	}
 	if collector.AnyWanted("disk", []string{"read_sectors_total", "written_sectors_total", "read_time_total", "write_time_total"}) {

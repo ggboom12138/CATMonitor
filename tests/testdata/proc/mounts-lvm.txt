@@ -1,0 +1,6 @@
+/dev/sdb2 /boot ext4 rw,relatime 0 0
+/dev/mapper/openeuler-root / ext4 rw,relatime 0 0
+/dev/mapper/openeuler-home /home ext4 rw,relatime 0 0
+proc /proc proc rw 0 0
+sysfs /sys sysfs rw 0 0
+tmpfs /dev/shm tmpfs rw 0 0

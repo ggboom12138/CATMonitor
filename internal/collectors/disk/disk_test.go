@@ -30,13 +30,21 @@ func readFile(t *testing.T, path string) string {
 
 // useTestdata redirects proc source to testdata, mocks dmesg (for io_errors)
 // and smartctl (for SMART). statfs is left real so space_usage tests hit the
-// actual root filesystem (always available).
+// actual root filesystem (always available). The smartctl JSON/scan seams
+// are mocked to fail so collectSMARTDetailed stays hermetic (no real
+// subprocess spawns).
 func useTestdata(t *testing.T) {
 	t.Helper()
 	proc.SetRoot(testdataProc)
 	dmesg.SetMock(readFile(t, "../../../tests/testdata/dmesg-oom-sample.txt"))
 	smartctl.SetFetcher(func(dev string) (string, error) {
 		return "SMART overall-health self-assessment test result: PASSED\nTemperature_Celsius 35\n", nil
+	})
+	smartctl.SetJSONFetcher(func(devPath, devType string) (string, error) {
+		return "", os.ErrPermission
+	})
+	smartctl.SetScanFetcher(func() (string, error) {
+		return "", os.ErrPermission
 	})
 	t.Cleanup(func() {
 		proc.SetRoot("/proc")
