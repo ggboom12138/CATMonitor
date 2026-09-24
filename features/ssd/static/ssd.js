@@ -184,7 +184,7 @@
       '  <div class="group-usage">' + usageBar(usage) + '</div>' +
       '  <span class="group-cap">' + fmtGB(lv.capacity_gb) + '</span>' +
       '</div>' +
-      chartsHTML(lv.device) +
+      chartsHTML(lv.device, lv.io) +
       '<div class="group-members">' + members + '</div>' + noMembers +
       '</div>';
   }
@@ -201,7 +201,7 @@
       '  <div class="group-usage">' + usageBar(usage) + '</div>' +
       '  <span class="group-cap">' + fmtGB(d.capacity_gb) + '</span>' +
       '</div>' +
-      chartsHTML(d.device) +
+      chartsHTML(d.device, d.io) +
       '<div class="group-members">' + physicalCard(d) + '</div>' +
       '</div>';
   }
@@ -222,23 +222,35 @@
   }
 
   // chartsHTML builds the three canvas cards for one curve source (logical
-  // volume or direct disk).
-  function chartsHTML(curveDevice) {
+  // volume or direct disk). The legend of each card carries the CURRENT
+  // values (same data that feeds the last chart point).
+  function chartsHTML(curveDevice, io) {
     var id = safeID(curveDevice);
+    if (!io) io = {};
     return '<div class="group-charts">' +
-      chartCard('读写吞吐 (MB/s)', 'tp', id) +
-      chartCard('读写 IOPS (次/s)', 'io', id) +
-      chartCard('读写延迟 (ms)', 'lat', id) +
+      chartCard('读写吞吐 (MB/s)', 'tp', id, io.read_throughput_mb_s, io.write_throughput_mb_s) +
+      chartCard('读写 IOPS (次/s)', 'io', id, io.read_iops, io.write_iops) +
+      chartCard('读写延迟 (ms)', 'lat', id, io.read_latency_ms, io.write_latency_ms) +
       '</div>';
   }
 
-  function chartCard(title, kind, id) {
+  function chartCard(title, kind, id, readVal, writeVal) {
     return '<div class="chart-card">' +
       '<div class="chart-head"><span>' + esc(title) + '</span>' +
-      '<span class="legend"><span><i style="background:' + COLOR_READ + '"></i>读</span>' +
-      '<span><i style="background:' + COLOR_WRITE + '"></i>写</span></span></div>' +
+      '<span class="legend">' +
+      legendItem('读', COLOR_READ, readVal) +
+      legendItem('写', COLOR_WRITE, writeVal) +
+      '</span></div>' +
       '<canvas id="chart-' + kind + '-' + id + '"></canvas>' +
       '</div>';
+  }
+
+  // legendItem renders "读 12.5" with the value colored like its series;
+  // missing data shows a dash.
+  function legendItem(name, color, val) {
+    var v = (val == null || isNaN(val)) ? '-' : fmtNum(val);
+    return '<span><i style="background:' + color + '"></i>' + name +
+      ' <b class="lg-val" style="color:' + color + '">' + esc(v) + '</b></span>';
   }
 
   // physicalCard renders one physical SSD with the FULL SMART table laid out
