@@ -228,29 +228,30 @@
     var id = safeID(curveDevice);
     if (!io) io = {};
     return '<div class="group-charts">' +
-      chartCard('读写吞吐 (MB/s)', 'tp', id, io.read_throughput_mb_s, io.write_throughput_mb_s) +
-      chartCard('读写 IOPS (次/s)', 'io', id, io.read_iops, io.write_iops) +
-      chartCard('读写延迟 (ms)', 'lat', id, io.read_latency_ms, io.write_latency_ms) +
+      chartCard('读写吞吐 (MB/s)', 'tp', id, io.read_throughput_mb_s, io.write_throughput_mb_s, 'MB/s') +
+      chartCard('读写 IOPS (次/s)', 'io', id, io.read_iops, io.write_iops, '次/s') +
+      chartCard('读写延迟 (ms)', 'lat', id, io.read_latency_ms, io.write_latency_ms, 'ms') +
       '</div>';
   }
 
-  function chartCard(title, kind, id, readVal, writeVal) {
+  function chartCard(title, kind, id, readVal, writeVal, unit) {
     return '<div class="chart-card">' +
       '<div class="chart-head"><span>' + esc(title) + '</span>' +
       '<span class="legend">' +
-      legendItem('读', COLOR_READ, readVal) +
-      legendItem('写', COLOR_WRITE, writeVal) +
+      legendItem('读', COLOR_READ, readVal, unit) +
+      legendItem('写', COLOR_WRITE, writeVal, unit) +
       '</span></div>' +
       '<canvas id="chart-' + kind + '-' + id + '"></canvas>' +
       '</div>';
   }
 
-  // legendItem renders "读 12.5" with the value colored like its series;
-  // missing data shows a dash.
-  function legendItem(name, color, val) {
+  // legendItem renders "读 12.5 MB/s": the value colored like its series
+  // (bold), the unit in small muted gray. Missing data shows a dash.
+  function legendItem(name, color, val, unit) {
     var v = (val == null || isNaN(val)) ? '-' : fmtNum(val);
     return '<span><i style="background:' + color + '"></i>' + name +
-      ' <b class="lg-val" style="color:' + color + '">' + esc(v) + '</b></span>';
+      ' <b class="lg-val" style="color:' + color + '">' + esc(v) + '</b>' +
+      ' <span class="lg-unit">' + esc(unit) + '</span></span>';
   }
 
   // physicalCard renders one physical SSD with the FULL SMART table laid out
