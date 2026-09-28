@@ -27,6 +27,7 @@ var ssdRequiredMetrics = []string{
 	// realtime IO
 	"throughput", "iops", "read_latency", "write_latency",
 	"read_sectors_total", "written_sectors_total",
+	"read_ios_total", "write_ios_total",
 	// SMART basic + detailed
 	"smart_status", "smart_temperature", "smart_wear_percent",
 	"smart_power_on_hours", "smart_power_cycles",

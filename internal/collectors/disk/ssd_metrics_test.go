@@ -246,6 +246,34 @@ func TestCollectSMARTDetailed(t *testing.T) {
 	}
 }
 
+func TestCollectRawCountersIncludesIOs(t *testing.T) {
+	useTestdata(t)
+	c := New()
+	metrics, err := c.collectRawCounters(time.Now())
+	if err != nil {
+		t.Fatalf("collectRawCounters failed: %v", err)
+	}
+	// fixture diskstats: sda + sdb (ram0 filtered), 6 counters each.
+	if len(metrics) != 12 {
+		t.Fatalf("expected 12 raw counters (2 devices × 6), got %d", len(metrics))
+	}
+	seen := map[string]map[string]bool{}
+	for _, m := range metrics {
+		dev := m.Labels["device"]
+		if seen[dev] == nil {
+			seen[dev] = map[string]bool{}
+		}
+		seen[dev][m.Name] = true
+	}
+	for _, dev := range []string{"sda", "sdb"} {
+		for _, name := range []string{"read_sectors_total", "written_sectors_total", "read_time_total", "write_time_total", "read_ios_total", "write_ios_total"} {
+			if !seen[dev][name] {
+				t.Errorf("%s missing counter %s", dev, name)
+			}
+		}
+	}
+}
+
 func TestCollectSMARTDetailedUnavailable(t *testing.T) {
 	useTestdata(t)
 	// Scan fails -> no RAID channels; JSON fails -> no direct metrics.

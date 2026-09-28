@@ -25,6 +25,10 @@ components:
         priority: Medium
       - name: written_sectors_total
         priority: Medium
+      - name: read_ios_total
+        priority: Medium
+      - name: write_ios_total
+        priority: Medium
       # ---- SMART 明细（smartctl -j -a，直连盘 + RAID 物理盘） ----
       # smart_temperature 在默认目录为 Low，会被 min_priority: medium 过滤，
       # 此处声明 High 抬高合并优先级后才能真正采集。

@@ -109,7 +109,7 @@ func (c *DiskCollector) Collect() ([]collector.Metric, error) {
 			metrics = append(metrics, usageMetrics...)
 		}
 	}
-	if collector.AnyWanted("disk", []string{"read_sectors_total", "written_sectors_total", "read_time_total", "write_time_total"}) {
+	if collector.AnyWanted("disk", []string{"read_sectors_total", "written_sectors_total", "read_time_total", "write_time_total", "read_ios_total", "write_ios_total"}) {
 		if rawMetrics, err := c.collectRawCounters(now); err == nil {
 			metrics = append(metrics, rawMetrics...)
 		}
@@ -285,7 +285,8 @@ func (c *DiskCollector) collectSMART(now time.Time) ([]collector.Metric, error) 
 
 // collectRawCounters emits cumulative raw counters from /proc/diskstats:
 // read_sectors_total, written_sectors_total, read_time_total (ms),
-// write_time_total (ms). Only real block devices (filtered by deviceFilter).
+// write_time_total (ms), read_ios_total, write_ios_total. Only real block
+// devices (filtered by deviceFilter).
 func (c *DiskCollector) collectRawCounters(now time.Time) ([]collector.Metric, error) {
 	current, err := c.filteredDiskStats()
 	if err != nil {
@@ -299,6 +300,8 @@ func (c *DiskCollector) collectRawCounters(now time.Time) ([]collector.Metric, e
 			collector.Metric{Component: "disk", Name: "written_sectors_total", Value: float64(s.SectorsWritten), Unit: "", Labels: labels, Timestamp: now},
 			collector.Metric{Component: "disk", Name: "read_time_total", Value: float64(s.ReadTime), Unit: "ms", Labels: labels, Timestamp: now},
 			collector.Metric{Component: "disk", Name: "write_time_total", Value: float64(s.WriteTime), Unit: "ms", Labels: labels, Timestamp: now},
+			collector.Metric{Component: "disk", Name: "read_ios_total", Value: float64(s.ReadsCompleted), Unit: "", Labels: labels, Timestamp: now},
+			collector.Metric{Component: "disk", Name: "write_ios_total", Value: float64(s.WritesCompleted), Unit: "", Labels: labels, Timestamp: now},
 		)
 	}
 	return metrics, nil

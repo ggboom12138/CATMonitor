@@ -370,6 +370,16 @@ components:
         priority: Medium
         unit: "ms"
         static: false
+      - name: read_ios_total
+        cn_name: "磁盘读IO总数"
+        priority: Medium
+        unit: ""
+        static: false
+      - name: write_ios_total
+        cn_name: "磁盘写IO总数"
+        priority: Medium
+        unit: ""
+        static: false
       - name: device_space_usage
         cn_name: "整盘空间使用率"
         priority: Medium
