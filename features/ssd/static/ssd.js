@@ -8,6 +8,9 @@
   var HISTORY_POINTS = 60;
   var COLOR_READ = '#3b82f6';
   var COLOR_WRITE = '#f59e0b';
+  // Per-physical-disk palette for the temperature chart series.
+  var PALETTE = ['#3b82f6', '#f59e0b', '#10b981', '#ef4444',
+                 '#8b5cf6', '#06b6d4', '#ec4899', '#84cc16'];
 
   var state = {
     intervalSec: 3,
@@ -120,11 +123,11 @@
     if (ov.failed_count) healthSub.push('<span class="err">' + ov.failed_count + ' 异常</span>');
     if (ov.no_smart_count) healthSub.push('<span class="na">' + ov.no_smart_count + ' 无 SMART</span>');
     $('overview').innerHTML =
-      statCard('SSD 物理盘', ov.ssd_count, '') +
-      statCard('物理总容量', fmtGB(ov.total_capacity_gb), '') +
+      statCard('SSD 物理盘', ov.ssd_count, '容量 ' + fmtGB(ov.ssd_total_capacity_gb)) +
+      statCard('HDD 物理盘', ov.hdd_count, '容量 ' + fmtGB(ov.hdd_total_capacity_gb)) +
       statCard('平均使用率', fmtPct(ov.avg_space_usage), '按有文件系统的实体统计') +
       statCard('健康状态', health, healthSub.join(' · ')) +
-      statCard('最高磨损', ov.max_wear_percent > 0 ? fmtPct(ov.max_wear_percent) : 'N/A', '寿命已消耗百分比');
+      statCard('最高磨损 (SSD)', ov.max_wear_percent > 0 ? fmtPct(ov.max_wear_percent) : 'N/A', 'SSD 寿命已消耗百分比');
   }
 
   function statCard(label, value, sub) {
@@ -141,35 +144,59 @@
 
   // ---------- groups ----------
   function renderGroups(groups) {
-    var pdCount = 0;
-    var frames = '';
-    var standalone = '';
+    var ssdHTML = '', hddHTML = '';
+    var ssdPD = 0, hddPD = 0, hasFrames = false;
     groups.forEach(function (g) {
-      pdCount += (g.members || []).length;
+      var isHDD = groupMedia(g) === 'hdd';
+      if (isHDD) hddPD += (g.members || []).length;
+      else ssdPD += (g.members || []).length;
+      var html;
       if (g.logical) {
-        frames += groupFrame(g);
+        hasFrames = true;
+        html = groupFrame(g);
       } else {
-        (g.members || []).forEach(function (m) { standalone += directFrame(m); });
+        html = (g.members || []).map(directFrame).join('');
       }
+      if (isHDD) hddHTML += html; else ssdHTML += html;
     });
-    $('diskCount').textContent = pdCount + ' 块物理盘';
-    $('topologyHint').textContent = frames
-      ? '大框 = RAID 逻辑盘（使用率与 IO 曲线在这一层）· 内嵌小框 = 物理 SSD（完整 SMART 平铺）'
+    $('diskCount').textContent = (ssdPD + hddPD) + ' 块物理盘（SSD ' + ssdPD + ' · HDD ' + hddPD + '）';
+    $('topologyHint').textContent = hasFrames
+      ? '大框 = 逻辑盘（使用率、IO 曲线与窗口统计在这一层）· 内嵌小框 = 物理盘（温度曲线与 SMART 平铺）'
       : '';
-    $('diskGrid').innerHTML = frames + standalone;
+    var out = '';
+    if (ssdHTML) out += '<h3 class="sub-title">SSD 盘组</h3>' + ssdHTML;
+    if (hddHTML) out += '<h3 class="sub-title">HDD 盘组</h3>' + hddHTML;
+    $('diskGrid').innerHTML = out;
 
-    // Feed rolling buffers and draw every frame's charts.
+    // Feed rolling buffers and draw every frame's charts: three IO charts
+    // from the curve source plus the per-member temperature chart.
     groups.forEach(function (g) {
+      var curveDev = null, io = null, members = [];
       if (g.logical) {
-        drawChartsFor(g.logical.device, g.logical.io);
-      } else {
-        (g.members || []).forEach(function (m) { drawChartsFor(m.device, m.io); });
+        curveDev = g.logical.device;
+        io = g.logical.io;
+        members = g.members || [];
+      } else if (g.members && g.members.length) {
+        curveDev = g.members[0].device;
+        io = g.members[0].io;
+        members = g.members;
       }
+      if (!curveDev) return;
+      drawChartsFor(curveDev, io);
+      drawTempChart(curveDev, members);
     });
   }
 
+  // groupMedia picks the section a group belongs to: the logical volume's
+  // media when wrapped, else the first member's.
+  function groupMedia(g) {
+    if (g.logical && g.logical.media) return g.logical.media;
+    if (g.members && g.members.length) return g.members[0].media || 'ssd';
+    return 'ssd';
+  }
+
   // groupFrame renders a RAID logical volume frame: header (usage) + charts
-  // + nested physical member cards.
+  // + window stats + nested physical member cards.
   function groupFrame(g) {
     var lv = g.logical;
     var usage = lv.space ? lv.space.usage_percent : null;
@@ -184,13 +211,15 @@
       '  <div class="group-usage">' + usageBar(usage) + '</div>' +
       '  <span class="group-cap">' + fmtGB(lv.capacity_gb) + '</span>' +
       '</div>' +
-      chartsHTML(lv.device, lv.io) +
+      chartsHTML(lv.device, lv.io, g.members || []) +
+      windowStatsHTML(lv.window_stats) +
       '<div class="group-members">' + members + '</div>' + noMembers +
       '</div>';
   }
 
   // directFrame renders a standalone physical (direct-attach) disk as its
-  // own frame: usage header + its own charts + its full SMART card.
+  // own frame: usage header + its own charts + window stats + its full
+  // SMART card.
   function directFrame(d) {
     var usage = d.space ? d.space.usage_percent : null;
     return '<div class="group-frame">' +
@@ -201,7 +230,8 @@
       '  <div class="group-usage">' + usageBar(usage) + '</div>' +
       '  <span class="group-cap">' + fmtGB(d.capacity_gb) + '</span>' +
       '</div>' +
-      chartsHTML(d.device, d.io) +
+      chartsHTML(d.device, d.io, [d]) +
+      windowStatsHTML(d.window_stats) +
       '<div class="group-members">' + physicalCard(d) + '</div>' +
       '</div>';
   }
@@ -221,16 +251,18 @@
       '<div class="bar ' + cls + '"><i style="width:' + w + '%"></i></div></div>';
   }
 
-  // chartsHTML builds the three canvas cards for one curve source (logical
-  // volume or direct disk). The legend of each card carries the CURRENT
-  // values (same data that feeds the last chart point).
-  function chartsHTML(curveDevice, io) {
+  // chartsHTML builds the four canvas cards for one curve source (logical
+  // volume or direct disk): three IO charts (per curve source) + the
+  // temperature chart (one line per member physical disk). Legends carry
+  // CURRENT values.
+  function chartsHTML(curveDevice, io, members) {
     var id = safeID(curveDevice);
     if (!io) io = {};
     return '<div class="group-charts">' +
       chartCard('读写吞吐 (MB/s)', 'tp', id, io.read_throughput_mb_s, io.write_throughput_mb_s, 'MB/s') +
       chartCard('读写 IOPS (次/s)', 'io', id, io.read_iops, io.write_iops, '次/s') +
       chartCard('读写延迟 (ms)', 'lat', id, io.read_latency_ms, io.write_latency_ms, 'ms') +
+      tempChartCard(curveDevice, members) +
       '</div>';
   }
 
@@ -245,6 +277,22 @@
       '</div>';
   }
 
+  // tempChartCard: one line per member physical disk, legend = device name
+  // + current temperature + °C.
+  function tempChartCard(curveDevice, members) {
+    var legend = (members || []).map(function (m, i) {
+      var color = PALETTE[i % PALETTE.length];
+      var t = (m.smart && m.smart.temperature != null && !isNaN(m.smart.temperature))
+        ? fmtNum(m.smart.temperature) : '-';
+      return '<span><i style="background:' + color + '"></i>' + esc(m.device) +
+        ' <b class="lg-val" style="color:' + color + '">' + t + '</b> <span class="lg-unit">°C</span></span>';
+    }).join('');
+    return '<div class="chart-card">' +
+      '<div class="chart-head"><span>温度 (°C)</span><span class="legend">' + legend + '</span></div>' +
+      '<canvas id="chart-temp-' + safeID(curveDevice) + '"></canvas>' +
+      '</div>';
+  }
+
   // legendItem renders "读 12.5 MB/s": the value colored like its series
   // (bold), the unit in small muted gray. Missing data shows a dash.
   function legendItem(name, color, val, unit) {
@@ -254,14 +302,44 @@
       ' <span class="lg-unit">' + esc(unit) + '</span></span>';
   }
 
-  // physicalCard renders one physical SSD with the FULL SMART table laid out
-  // flat — no click interaction.
+  // windowStatsHTML renders the 1/6/12/24h traffic/IO totals as a compact
+  // table. Windows still accumulating show a footnote.
+  function windowStatsHTML(stats) {
+    if (!stats || !stats['1h']) return '';
+    var labels = ['1h', '6h', '12h', '24h'];
+    var fullMinutes = { '1h': 60, '6h': 360, '12h': 720, '24h': 1440 };
+    var partial = false;
+    labels.forEach(function (l) {
+      if (!stats[l] || stats[l].covered_minutes < fullMinutes[l]) partial = true;
+    });
+    function row(name, fmt) {
+      return '<tr><td>' + name + '</td>' + labels.map(function (l) {
+        var st = stats[l];
+        return '<td>' + (st ? fmt(st) : 'N/A') + '</td>';
+      }).join('') + '</tr>';
+    }
+    return '<div class="window-stats">' +
+      '<div class="window-title">窗口统计（读写总量）</div>' +
+      '<table class="window-table">' +
+      '<tr><th></th>' + labels.map(function (l) { return '<th>近' + l + '</th>'; }).join('') + '</tr>' +
+      row('读数据量', function (st) { return fmtGB(st.read_gb); }) +
+      row('写数据量', function (st) { return fmtGB(st.write_gb); }) +
+      row('读 IO 次数', function (st) { return fmtNum(st.read_ios); }) +
+      row('写 IO 次数', function (st) { return fmtNum(st.write_ios); }) +
+      '</table>' +
+      (partial ? '<div class="hint">* 部分窗口仍在积累中，数值为已积累时段的总量</div>' : '') +
+      '</div>';
+  }
+
+  // physicalCard renders one physical disk with the FULL SMART table laid out
+  // flat — no click interaction. SSD/HDD badge distinguishes media.
   function physicalCard(d) {
     var h = healthOf(d);
+    var mediaBadge = d.media === 'hdd' ? '<span class="badge badge-hdd">HDD</span>' : '<span class="badge badge-ssd">SSD</span>';
     return '<div class="disk-card disk-card-flat">' +
       '<div class="disk-head">' +
       '  <span class="health-dot ' + h + '" title="' + (h === 'ok' ? '健康' : h === 'err' ? '异常' : '无 SMART 数据') + '"></span>' +
-      '  <span class="disk-device">' + esc(d.device) + '</span>' +
+      '  <span class="disk-device">' + esc(d.device) + '</span>' + mediaBadge +
       '  <span style="margin-left:auto;color:var(--muted);font-size:12px">' + fmtGB(d.capacity_gb) + '</span>' +
       '</div>' +
       '<div class="disk-model">' + esc(d.model || '未知型号') +
@@ -334,6 +412,29 @@
     ]);
   }
 
+  // drawTempChart feeds each member's temperature rolling buffer (60s
+  // smartctl cache → step-like curve) and draws the per-disk lines. Missing
+  // temperatures push null points so series stay aligned; the renderer
+  // breaks the line on null.
+  function drawTempChart(curveDevice, members) {
+    var canvas = $('chart-temp-' + safeID(curveDevice));
+    if (!canvas) return;
+    var series = [];
+    (members || []).forEach(function (m, i) {
+      var key = 'temp:' + m.device;
+      var h = state.history[key];
+      if (!h) {
+        h = [];
+        state.history[key] = h;
+      }
+      var t = (m.smart && m.smart.temperature != null && !isNaN(m.smart.temperature))
+        ? m.smart.temperature : null;
+      push(h, t);
+      series.push({ color: PALETTE[i % PALETTE.length], data: h });
+    });
+    drawChart(canvas, series);
+  }
+
   function drawChart(canvas, series) {
     if (!canvas) return;
     var dpr = window.devicePixelRatio || 1;
@@ -354,7 +455,7 @@
 
     var max = 0;
     series.forEach(function (s) {
-      s.data.forEach(function (v) { if (v > max) max = v; });
+      s.data.forEach(function (v) { if (v != null && v > max) max = v; });
     });
     if (max <= 0) max = 1;
     var nice = niceCeil(max);
@@ -380,10 +481,13 @@
       ctx.strokeStyle = s.color;
       ctx.lineWidth = 1.6;
       ctx.beginPath();
+      var penDown = false;
       for (var j = 0; j < s.data.length; j++) {
+        var v = s.data[j];
+        if (v == null) { penDown = false; continue; } // break the line on gaps
         var x = x0 + step * j;
-        var yy = padT + plotH - plotH * (s.data[j] / nice);
-        if (j === 0) ctx.moveTo(x, yy); else ctx.lineTo(x, yy);
+        var yy = padT + plotH - plotH * (v / nice);
+        if (!penDown) { ctx.moveTo(x, yy); penDown = true; } else { ctx.lineTo(x, yy); }
       }
       ctx.stroke();
     });

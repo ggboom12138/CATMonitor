@@ -72,12 +72,25 @@ func TestBuildGroupsRAID(t *testing.T) {
 
 	groups, ov := buildGroups(specs, metrics)
 
-	if len(groups) != 1 {
-		t.Fatalf("expected 1 group (sdb + 2 members), got %d: %+v", len(groups), groups)
+	// Two groups now: the SSD pair (sdb + members) AND the HDD pair
+	// (sda + megaraid,4) — same page, same grouping rules.
+	if len(groups) != 2 {
+		t.Fatalf("expected 2 groups (SSD + HDD), got %d: %+v", len(groups), groups)
 	}
-	g := groups[0]
-	if g.Logical == nil || g.Logical.Device != "sdb" {
-		t.Fatalf("group should wrap logical sdb, got %+v", g.Logical)
+	var g, hdd DiskGroup
+	for i := range groups {
+		if groups[i].Logical == nil {
+			continue
+		}
+		switch groups[i].Logical.Device {
+		case "sdb":
+			g = groups[i]
+		case "sda":
+			hdd = groups[i]
+		}
+	}
+	if g.Logical == nil || hdd.Logical == nil {
+		t.Fatalf("groups should wrap sda and sdb, got %+v", groups)
 	}
 	if g.Logical.Space == nil || g.Logical.Space.UsagePercent != 61.18 {
 		t.Errorf("logical space: %+v", g.Logical.Space)
@@ -104,18 +117,36 @@ func TestBuildGroupsRAID(t *testing.T) {
 	}
 
 	// Overview counts physical only.
-	if ov.SSDCount != 2 || ov.HealthyCount != 2 || ov.FailedCount != 0 || ov.NoSMARTCount != 0 {
-		t.Errorf("overview counts: %+v", ov)
-	}
-	if ov.TotalCapacityGB != 960.2*2 {
-		t.Errorf("total capacity: got %v want %v", ov.TotalCapacityGB, 960.2*2)
-	}
 	if ov.MaxWearPercent != 1 {
 		t.Errorf("max wear: got %v", ov.MaxWearPercent)
 	}
 	// Usage average over entities WITH filesystems: only sdb here.
 	if ov.AvgSpaceUsage != 61.18 {
 		t.Errorf("avg usage: got %v want 61.18", ov.AvgSpaceUsage)
+	}
+
+	// HDD group: sda (logical, hdd) wraps megaraid,4 (physical, hdd) via
+	// capacity inference (1199.7 ≈ 1200.2, 0.04% off).
+	if hdd.Logical.Device != "sda" || hdd.Logical.Media != "hdd" {
+		t.Fatalf("HDD group: %+v", hdd.Logical)
+	}
+	if len(hdd.Members) != 1 || hdd.Members[0].Device != "megaraid,4" {
+		t.Errorf("HDD members: %+v", hdd.Members)
+	}
+	if hdd.Members[0].Media != "hdd" || g.Logical.Media != "ssd" {
+		t.Errorf("media labels: hdd=%q ssd=%q", hdd.Members[0].Media, g.Logical.Media)
+	}
+
+	// Overview: SSD and HDD counts split; wear is SSD-only. megaraid,4 has
+	// temperature but no smart_status in the fixture → counted as no-SMART.
+	if ov.SSDCount != 2 || ov.HDDCount != 1 {
+		t.Errorf("counts: SSD=%d HDD=%d want 2/1", ov.SSDCount, ov.HDDCount)
+	}
+	if ov.SSDTotalCapacityGB != 960.2*2 || ov.HDDTotalCapacityGB != 1200.2 {
+		t.Errorf("capacities: SSD=%v HDD=%v", ov.SSDTotalCapacityGB, ov.HDDTotalCapacityGB)
+	}
+	if ov.HealthyCount != 2 || ov.NoSMARTCount != 1 || ov.FailedCount != 0 {
+		t.Errorf("health across all media: %+v", ov)
 	}
 }
 

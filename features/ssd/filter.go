@@ -26,17 +26,20 @@ type SSDResponse struct {
 	Groups            []DiskGroup `json:"groups"`
 }
 
-// Overview aggregates the SSD fleet headline numbers. Counts and capacities
-// are over PHYSICAL disks only; the usage average covers every entity that
-// actually has a filesystem (logical volumes and direct disks).
+// Overview aggregates the disk fleet headline numbers. Counts and
+// capacities are over PHYSICAL disks (SSD and HDD split); the usage average
+// covers every entity that actually has a filesystem (logical volumes and
+// direct disks). Max wear is SSD-only (HDDs have no wear concept).
 type Overview struct {
-	SSDCount        int     `json:"ssd_count"`
-	TotalCapacityGB float64 `json:"total_capacity_gb"`
-	AvgSpaceUsage   float64 `json:"avg_space_usage"`
-	HealthyCount    int     `json:"healthy_count"`
-	FailedCount     int     `json:"failed_count"`
-	NoSMARTCount    int     `json:"no_smart_count"`
-	MaxWearPercent  float64 `json:"max_wear_percent"`
+	SSDCount          int     `json:"ssd_count"`
+	SSDTotalCapacityGB float64 `json:"ssd_total_capacity_gb"`
+	HDDCount          int     `json:"hdd_count"`
+	HDDTotalCapacityGB float64 `json:"hdd_total_capacity_gb"`
+	AvgSpaceUsage     float64 `json:"avg_space_usage"`
+	HealthyCount      int     `json:"healthy_count"`
+	FailedCount       int     `json:"failed_count"`
+	NoSMARTCount      int     `json:"no_smart_count"`
+	MaxWearPercent    float64 `json:"max_wear_percent"`
 }
 
 // DiskGroup is one rendered unit: a logical volume frame (usage + IO curves
@@ -52,28 +55,34 @@ type DiskGroup struct {
 }
 
 // LogicalView is the per-logical-volume view: identity + the two dimensions
-// that only exist at this layer (filesystem usage and kernel IO stats).
+// that only exist at this layer (filesystem usage and kernel IO stats) plus
+// the 1/6/12/24h window statistics computed by the handler-side sampler.
 type LogicalView struct {
-	Device     string     `json:"device"`
-	Model      string     `json:"model"`
-	CapacityGB float64    `json:"capacity_gb"`
-	Space      *SpaceView `json:"space,omitempty"`
-	IO         *IOView    `json:"io,omitempty"`
+	Device      string               `json:"device"`
+	Model       string               `json:"model"`
+	Media       string               `json:"media,omitempty"`
+	CapacityGB  float64              `json:"capacity_gb"`
+	Space       *SpaceView           `json:"space,omitempty"`
+	IO          *IOView              `json:"io,omitempty"`
+	WindowStats map[string]WindowStat `json:"window_stats,omitempty"`
 }
 
-// DiskView is one physical SSD: identity + SMART. Space/IO are only set for
+// DiskView is one physical disk: identity + SMART. Space/IO are only set for
 // direct-attach disks (no RAID card), where the physical disk is also the
-// block device the kernel sees filesystems and IO stats for.
+// block device the kernel sees filesystems and IO stats for. WindowStats is
+// set for direct-attach disks (their counters exist in diskstats).
 type DiskView struct {
-	Device     string     `json:"device"`
-	Model      string     `json:"model"`
-	Serial     string     `json:"serial,omitempty"`
-	Firmware   string     `json:"firmware,omitempty"`
-	Interface  string     `json:"interface,omitempty"`
-	CapacityGB float64    `json:"capacity_gb"`
-	SMART      *SmartView `json:"smart,omitempty"`
-	Space      *SpaceView `json:"space,omitempty"`
-	IO         *IOView    `json:"io,omitempty"`
+	Device      string               `json:"device"`
+	Model       string               `json:"model"`
+	Media       string               `json:"media,omitempty"`
+	Serial      string               `json:"serial,omitempty"`
+	Firmware    string               `json:"firmware,omitempty"`
+	Interface   string               `json:"interface,omitempty"`
+	CapacityGB  float64              `json:"capacity_gb"`
+	SMART       *SmartView           `json:"smart,omitempty"`
+	Space       *SpaceView           `json:"space,omitempty"`
+	IO          *IOView              `json:"io,omitempty"`
+	WindowStats map[string]WindowStat `json:"window_stats,omitempty"`
 }
 
 // SmartView holds the per-disk SMART snapshot. nil pointer fields mean the
@@ -113,7 +122,7 @@ type IOView struct {
 }
 
 // buildGroups assembles the disk groups from the disk component snapshot.
-// specs provide the SSD inventory (disk_info rows with media=ssd; kind
+// specs provide the disk inventory (disk_info rows with media=ssd|hdd; kind
 // separates physical disks from RAID logical volumes); metrics are attached
 // to their device (physicals get SMART, logicals get space/IO; direct
 // physicals also get space/IO). Logical volumes are then matched to member
@@ -127,8 +136,9 @@ func buildGroups(specs, metrics []collector.Metric) ([]DiskGroup, Overview) {
 		if s.Name != "disk_info" || s.Component != "disk" {
 			continue
 		}
-		if s.Labels["media"] != "ssd" {
-			continue
+		media := s.Labels["media"]
+		if media != "ssd" && media != "hdd" {
+			continue // unknown medium: not classified, not monitored here
 		}
 		dev := s.Labels["device"]
 		if dev == "" {
@@ -141,6 +151,7 @@ func buildGroups(specs, metrics []collector.Metric) ([]DiskGroup, Overview) {
 			lvByDev[dev] = &LogicalView{
 				Device:     dev,
 				Model:      s.Labels["model"],
+				Media:      media,
 				CapacityGB: s.Value,
 			}
 			lvOrder = append(lvOrder, dev)
@@ -151,6 +162,7 @@ func buildGroups(specs, metrics []collector.Metric) ([]DiskGroup, Overview) {
 			pdByDev[dev] = &DiskView{
 				Device:     dev,
 				Model:      s.Labels["model"],
+				Media:      media,
 				Serial:     s.Labels["serial"],
 				Firmware:   s.Labels["firmware"],
 				Interface:  s.Labels["interface"],
@@ -405,12 +417,19 @@ func sortGroups(groups []DiskGroup) {
 }
 
 // buildOverview folds the physical disks (and filesystem usages) into the
-// headline numbers.
+// headline numbers. SSD/HDD counts and capacities are split; wear is
+// SSD-only.
 func buildOverview(physicals []DiskView, usages []float64) Overview {
 	var ov Overview
-	ov.SSDCount = len(physicals)
 	for _, d := range physicals {
-		ov.TotalCapacityGB += d.CapacityGB
+		switch d.Media {
+		case "hdd":
+			ov.HDDCount++
+			ov.HDDTotalCapacityGB += d.CapacityGB
+		default:
+			ov.SSDCount++
+			ov.SSDTotalCapacityGB += d.CapacityGB
+		}
 		if d.SMART != nil && d.SMART.Passed != nil {
 			if *d.SMART.Passed == 1 {
 				ov.HealthyCount++
@@ -420,7 +439,7 @@ func buildOverview(physicals []DiskView, usages []float64) Overview {
 		} else {
 			ov.NoSMARTCount++
 		}
-		if d.SMART != nil && d.SMART.WearPercent != nil && *d.SMART.WearPercent > ov.MaxWearPercent {
+		if d.Media != "hdd" && d.SMART != nil && d.SMART.WearPercent != nil && *d.SMART.WearPercent > ov.MaxWearPercent {
 			ov.MaxWearPercent = *d.SMART.WearPercent
 		}
 	}

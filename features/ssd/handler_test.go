@@ -109,7 +109,7 @@ func TestHandleIndexServesSPA(t *testing.T) {
 		body := make([]byte, 512)
 		n, _ := resp.Body.Read(body)
 		resp.Body.Close()
-		if resp.StatusCode != http.StatusOK || !strings.Contains(string(body[:n]), "SSD") {
+		if resp.StatusCode != http.StatusOK || !strings.Contains(string(body[:n]), "磁盘监控") {
 			t.Errorf("GET %s: status %d, body %q", path, resp.StatusCode, string(body[:n]))
 		}
 	}

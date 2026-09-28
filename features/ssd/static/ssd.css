@@ -146,10 +146,29 @@ main { padding: 16px 24px 40px; }
 .group-head:hover .group-device { color: var(--accent); }
 
 /* ---- charts inside the frame ---- */
+.sub-title { font-size: 14px; font-weight: 600; color: var(--muted); margin: 20px 2px 10px; }
+.group-grid > .sub-title:first-child { margin-top: 4px; }
+.badge-ssd { color: var(--accent); }
+.badge-hdd { color: var(--warn); }
+
 .group-charts {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 12px; margin-bottom: 12px;
 }
+
+/* ---- window stats (1/6/12/24h totals) ---- */
+.window-stats { margin: 0 2px 12px; }
+.window-title { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+.window-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.window-table th, .window-table td {
+  padding: 4px 10px; border: 1px solid var(--grid-line); text-align: right;
+}
+.window-table th { color: var(--muted); font-weight: 600; }
+.window-table td { font-variant-numeric: tabular-nums; }
+.window-table th:first-child, .window-table td:first-child {
+  text-align: left; color: var(--muted); font-weight: 400;
+}
+.window-stats .hint { margin-top: 6px; }
 .chart-card {
   background: var(--card); border: 1px solid var(--border); border-radius: 10px;
   padding: 10px 12px; box-shadow: var(--shadow);

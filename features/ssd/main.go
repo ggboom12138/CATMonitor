@@ -26,8 +26,13 @@ func main() {
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
+	// Window sampler: 30s cadence counter rings behind the 1/6/12/24h
+	// traffic/IO totals. In-memory only; history rebuilds after restart.
+	sampler := newWindowSampler(*dir)
+	samplerStop := make(chan struct{})
+
 	mux := http.NewServeMux()
-	Register(mux, *dir)
+	RegisterWithSampler(mux, *dir, sampler)
 
 	httpServer := &http.Server{Handler: mux}
 	ln, bound, err := listenWithFallback(*addr, logger)
@@ -46,9 +51,11 @@ func main() {
 			cancel()
 		}
 	}()
+	go sampler.Run(samplerStop)
 
 	<-ctx.Done()
 	logger.Info("shutting down", "signal", ctx.Err())
+	close(samplerStop)
 	shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutCancel()
 	_ = httpServer.Shutdown(shutCtx)

@@ -11,13 +11,15 @@ import (
 	"github.com/Computing-Availability-Tools/CATMonitor/internal/version"
 )
 
-// Handler serves the SSD monitoring API and static SPA. It is a read-only
+// Handler serves the disk monitoring API and static SPA. It is a read-only
 // consumer: it loads the daemon-produced snapshot.json (session/timestamp/
 // refresh) and snapshot_disk.json (per-disk metrics + disk_info specs) from
-// Dir on every request and assembles the per-disk views. There is no state:
-// throughput/iops/latency are already rates on the daemon side.
+// Dir on every request and assembles the per-disk views. Realtime IO is
+// already rate-based on the daemon side; the optional windowSampler adds
+// the 1/6/12/24h traffic/IO totals from its in-memory counter rings.
 type Handler struct {
-	dir string
+	dir     string
+	sampler *windowSampler
 }
 
 // NewHandler creates a Handler that reads snapshots from dir.
@@ -28,9 +30,21 @@ func NewHandler(dir string) *Handler {
 // Register mounts the ssd feature at the mux root: the SPA at "/" and
 // "/ssd/", the API at "/api/ssd", and static assets at "/ssd/static/"
 // (assets are referenced with absolute /ssd/static/... paths). Used by the
-// standalone catmonitor-ssd binary.
+// standalone catmonitor-ssd binary; no window sampler (library/test use).
 func Register(mux *http.ServeMux, dir string) {
+	registerWith(mux, NewHandler(dir))
+}
+
+// RegisterWithSampler is Register plus a running window sampler whose
+// 1/6/12/24h stats are attached to every logical volume and direct disk in
+// the API response. The caller owns the sampler lifecycle (Run/stop).
+func RegisterWithSampler(mux *http.ServeMux, dir string, samp *windowSampler) {
 	h := NewHandler(dir)
+	h.sampler = samp
+	registerWith(mux, h)
+}
+
+func registerWith(mux *http.ServeMux, h *Handler) {
 	sub, err := fs.Sub(staticFiles, "static")
 	if err != nil {
 		panic("ssd: embed sub failed: " + err.Error())
@@ -56,7 +70,7 @@ func (h *Handler) readDiskSnapshot() (*snapshot.GlobalSnapshot, *snapshot.CompSn
 	return g, c, nil
 }
 
-// handleAPI returns the grouped per-disk SSD views as SSDResponse JSON.
+// handleAPI returns the grouped per-disk views as SSDResponse JSON.
 func (h *Handler) handleAPI(w http.ResponseWriter, r *http.Request) {
 	g, c, err := h.readDiskSnapshot()
 	if err != nil {
@@ -64,6 +78,18 @@ func (h *Handler) handleAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	groups, overview := buildGroups(c.Specs, c.Metrics)
+	if h.sampler != nil {
+		// Window stats live on the curve sources: logical volumes and
+		// direct-attach disks (the devices that own diskstats counters).
+		for i := range groups {
+			g := &groups[i]
+			if g.Logical != nil {
+				g.Logical.WindowStats = h.sampler.Windows(g.Logical.Device)
+			} else if len(g.Members) == 1 && g.Members[0].IO != nil {
+				g.Members[0].WindowStats = h.sampler.Windows(g.Members[0].Device)
+			}
+		}
+	}
 	resp := SSDResponse{
 		SessionID:         g.SessionID,
 		Version:           version.Version,
