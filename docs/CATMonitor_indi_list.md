@@ -3,7 +3,7 @@
 > 本文档列出 CATMonitor 支持的全部服务器运行指标。
 > 每个指标包含：优先级、默认采集周期、默认是否采集、数据来源、采集方法、输出示例。
 >
-> **版本**: v0.3.6 ｜ **更新日期**: 2026-09-08 ｜ **指标总数**: 227（High 26 / Medium 154 / Low 47）
+> **版本**: v0.3.6 ｜ **更新日期**: 2026-09-08 ｜ **指标总数**: 229（High 26 / Medium 156 / Low 47）
 > **来源层**: 全部 7 个采集器（cpu/memory/disk/network/gpu/npu/chassis）已接入 `internal/source/` 来源层（14 包：proc/sys/ipmi/lscpu/mce/dmesg/dmidecode/statfs/smartctl + dcmi/npu_smi/hccn_tool/nvidia_smi + lspci）。
 > **指标采集目录**：`internal/metrics` + `configs/metrics.yaml`（默认目录）+ 模块自有 `metrics.yaml` 覆盖；High/Medium + 静态身份默认采、Low 诊断默认不采。v0.3.3 起 `collection.min_priority`（low/medium/high）按优先级阈值预过滤；v0.3.3 后续 `features` 配置 + `SetFeatureScope` 白名单（各 feature `metrics.yaml` 并集），非空时只采白名单内且 `priority ≥ min_priority` 指标，`AnyWanted` 跳过全 out-of-scope 子方法。
 > **特性模块**：`features/snapshot`（snapshot 统一生产，daemon 唯一写者，供只读特性消费）+ `features/web`（独立二进制 `catmonitor-web`，只读消费 snapshot，:19322）+ `features/dfee`（独立二进制 `catmonitor-dfee`，能效监控 34 张实时图表 + 内置 Prometheus exporter :9333/metrics + CSV 落盘 + Grafana Dashboard，只读消费 snapshot，:19323）+ `features/stress`（可靠性压测 STREAM/HPL/HPCG/NPU Burn，CLI/Web 共享报告与互斥锁，:19322/stress/）+ `features/exporter`（daemon 内置 Prometheus 导出 :19320/metrics）+ `features/faultsub`（故障订阅推送 :19321）+ `features/stragglerout`（落后节点 KPI 文件输出，opt-in，供 straggler 慢节点检测器消费）。
@@ -26,12 +26,12 @@
 |------|--------|------|--------|-----|
 | CPU | 39 | 4 | 21 | 14 |
 | Memory | 20 | 4 | 11 | 5 |
-| Disk | 25 | 1 | 20 | 4 |
+| Disk | 27 | 1 | 22 | 4 |
 | GPU | 8 | 3 | 4 | 1 |
 | NPU | 123 | 11 | 91 | 21 |
 | Network | 7 | 1 | 5 | 1 |
 | Chassis | 5 | 2 | 2 | 1 |
-| **合计** | **227** | **26** | **154** | **47** |
+| **合计** | **229** | **26** | **156** | **47** |
 
 ---
 
@@ -742,6 +742,8 @@ CPU 采集器通过 `/proc`、`/sys`、`lscpu`、`ipmitool`、`/var/log`(mcelog/
 | 3.22 | smart_reallocated_sectors | 重映射扇区数 | Medium | 60s | 否 | 个 | smartctl -j -a (ATA) |
 | 3.23 | smart_available_spare | 可用备件百分比 | Medium | 60s | 否 | % | smartctl -j -a (NVMe) |
 | 3.24 | smart_unsafe_shutdowns | 意外断电次数 | Medium | 60s | 否 | 次 | smartctl -j -a (NVMe) |
+| 3.25 | read_ios_total | 磁盘读IO总数 | Medium | 5s | 是 | - | /proc/diskstats (field 4) |
+| 3.26 | write_ios_total | 磁盘写IO总数 | Medium | 5s | 是 | - | /proc/diskstats (field 8) |
 
 ### 指标详情
 
@@ -2058,7 +2060,7 @@ FAN1 R Speed      | 9300.000   | RPM        | ok
 
 ## 附录B：已实现采集指标清单
 
-> 以下 227 个指标均已实现并通过测试，按部件分类汇总。其中 CPU 39、Memory 20、Disk 25（含累计 raw counters + `space_detail` + 11 项按盘 SSD 指标）、GPU 8（含 `memory_detail`）、NPU 123 个指标（含 `card_drop` 掉卡检测 + `process_info`/`process_total` 进程信息 + `npu_util` 整体利用率），Network 7（含 `rx/tx_bytes_total`），Chassis 5 个指标，且全部 7 个采集器（chassis/cpu/memory/disk/network/gpu/npu）已接入来源层(source layer，14 包含 lspci)。NPU 采用 device 并行采集，DCMI 指标通过 CGo（`-tags dcmi`）调用 libdcmi.so。
+> 以下 229 个指标均已实现并通过测试，按部件分类汇总。其中 CPU 39、Memory 20、Disk 27（含累计 raw counters + `space_detail` + 11 项按盘 SSD 指标 + 读写 IO 总数）、GPU 8（含 `memory_detail`）、NPU 123 个指标（含 `card_drop` 掉卡检测 + `process_info`/`process_total` 进程信息 + `npu_util` 整体利用率），Network 7（含 `rx/tx_bytes_total`），Chassis 5 个指标，且全部 7 个采集器（chassis/cpu/memory/disk/network/gpu/npu）已接入来源层(source layer，14 包含 lspci)。NPU 采用 device 并行采集，DCMI 指标通过 CGo（`-tags dcmi`）调用 libdcmi.so。
 
 ### CPU（39 个）
 
@@ -2313,15 +2315,15 @@ FAN1 R Speed      | 9300.000   | RPM        | ok
 
 ### 统计汇总
 
-全部 7 个部件共 227 项指标（High 26 / Medium 154 / Low 47），与文档开头「汇总统计」一致：
+全部 7 个部件共 229 项指标（High 26 / Medium 156 / Low 47），与文档开头「汇总统计」一致：
 
 | 部件 | 指标数 | High | Medium | Low |
 |------|--------|------|--------|-----|
 | CPU | 39 | 4 | 21 | 14 |
 | Memory | 20 | 4 | 11 | 5 |
-| Disk | 25 | 1 | 20 | 4 |
+| Disk | 27 | 1 | 22 | 4 |
 | GPU | 8 | 3 | 4 | 1 |
 | NPU | 123 | 11 | 91 | 21 |
 | Network | 7 | 1 | 5 | 1 |
 | Chassis | 5 | 2 | 2 | 1 |
-| **合计** | **227** | **26** | **154** | **47** |
+| **合计** | **229** | **26** | **156** | **47** |
