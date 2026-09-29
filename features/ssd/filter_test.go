@@ -327,3 +327,55 @@ func TestMatchMembersTolerance(t *testing.T) {
 		t.Errorf("already-used physicals should not rematch, got %v", m)
 	}
 }
+
+// TestBuildGroupsAuthoritative: the RAID1-ambiguity scenario (both single
+// disks match the volume capacity) is resolved by storcli volume labels —
+// tier 1 groups both members unconditionally; the raid_level label passes
+// through to the logical view.
+func TestBuildGroupsAuthoritative(t *testing.T) {
+	specs := []collector.Metric{
+		mk("disk", "disk_info", 960.2, map[string]string{
+			"device": "sda", "media": "hdd", "kind": "logical", "model": "MR9440", "raid_level": "RAID1",
+		}),
+		mk("disk", "disk_info", 960.2, map[string]string{
+			"device": "megaraid,4", "media": "hdd", "kind": "physical", "model": "SEAGATE A", "volume": "sda",
+		}),
+		mk("disk", "disk_info", 960.2, map[string]string{
+			"device": "megaraid,5", "media": "hdd", "kind": "physical", "model": "SEAGATE B", "volume": "sda",
+		}),
+	}
+	metrics := []collector.Metric{
+		mk("disk", "device_space_usage", 50, deviceLabels("sda")),
+		mk("disk", "smart_status", 1, map[string]string{"device": "megaraid,4", "status": "PASSED"}),
+		mk("disk", "smart_status", 1, map[string]string{"device": "megaraid,5", "status": "PASSED"}),
+	}
+	groups, ov := buildGroups(specs, metrics)
+	if len(groups) != 1 {
+		t.Fatalf("authoritative labels should group everything into 1 group, got %d: %+v", len(groups), groups)
+	}
+	g := groups[0]
+	if g.Logical == nil || g.Logical.Device != "sda" || g.Logical.RAIDLevel != "RAID1" {
+		t.Fatalf("logical view: %+v", g.Logical)
+	}
+	if len(g.Members) != 2 || g.Members[0].Device != "megaraid,4" || g.Members[1].Device != "megaraid,5" {
+		t.Errorf("members: %+v", g.Members)
+	}
+	if ov.HDDCount != 2 || ov.SSDCount != 0 {
+		t.Errorf("overview: %+v", ov)
+	}
+}
+
+// TestBuildGroupsAuthoritativeUnknownVolume: a volume label pointing at a
+// nonexistent logical volume is ignored — the physical falls back to
+// capacity inference / standalone.
+func TestBuildGroupsAuthoritativeUnknownVolume(t *testing.T) {
+	specs := []collector.Metric{
+		mk("disk", "disk_info", 300, map[string]string{
+			"device": "nvme0n1", "media": "ssd", "kind": "physical", "model": "X", "volume": "ghost",
+		}),
+	}
+	groups, _ := buildGroups(specs, nil)
+	if len(groups) != 1 || len(groups[0].Members) != 1 || groups[0].Members[0].Device != "nvme0n1" {
+		t.Fatalf("unknown volume label should degrade to standalone, got %+v", groups)
+	}
+}

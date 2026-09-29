@@ -61,6 +61,7 @@ type LogicalView struct {
 	Device      string                `json:"device"`
 	Model       string                `json:"model"`
 	Media       string                `json:"media,omitempty"`
+	RAIDLevel   string                `json:"raid_level,omitempty"` // from storcli, e.g. RAID1
 	CapacityGB  float64               `json:"capacity_gb"`
 	Space       *SpaceView            `json:"space,omitempty"`
 	IO          *IOView               `json:"io,omitempty"`
@@ -134,6 +135,9 @@ func buildGroups(specs, metrics []collector.Metric) ([]DiskGroup, Overview) {
 	pdByDev := map[string]*DiskView{}
 	lvByDev := map[string]*LogicalView{}
 	var pdOrder, lvOrder []string
+	// volumeOf carries the AUTHORITATIVE storcli membership (physical device
+	// → logical device); it wins over capacity inference when present.
+	volumeOf := map[string]string{}
 	for _, s := range specs {
 		if s.Name != "disk_info" || s.Component != "disk" {
 			continue
@@ -154,6 +158,7 @@ func buildGroups(specs, metrics []collector.Metric) ([]DiskGroup, Overview) {
 				Device:     dev,
 				Model:      s.Labels["model"],
 				Media:      media,
+				RAIDLevel:  s.Labels["raid_level"],
 				CapacityGB: s.Value,
 			}
 			lvOrder = append(lvOrder, dev)
@@ -171,6 +176,9 @@ func buildGroups(specs, metrics []collector.Metric) ([]DiskGroup, Overview) {
 				CapacityGB: s.Value,
 			}
 			pdOrder = append(pdOrder, dev)
+			if v := s.Labels["volume"]; v != "" {
+				volumeOf[dev] = v
+			}
 		}
 	}
 
@@ -183,24 +191,45 @@ func buildGroups(specs, metrics []collector.Metric) ([]DiskGroup, Overview) {
 		}
 	}
 
-	// Capacity inference: map each logical volume onto the subset of unused
-	// physicals that sums up to its capacity.
+	// Two-tier grouping. Tier 1: the authoritative storcli volume labels —
+	// a labeled physical disk joins its logical volume unconditionally.
+	// Tier 2: capacity inference (±1%, smallest subset, ambiguity refusal)
+	// for the remaining unlabeled physicals.
 	used := map[string]bool{}
 	var groups []DiskGroup
+	groupIdx := map[string]int{}
 	for _, dev := range sortedCopy(lvOrder) {
-		lv := lvByDev[dev]
-		members := matchMembers(lv, pdByDev, used)
-		g := DiskGroup{Logical: lv}
-		if members != nil {
-			g.Members = members
+		groups = append(groups, DiskGroup{Logical: lvByDev[dev]})
+		groupIdx[dev] = len(groups) - 1
+	}
+	for _, dev := range sortedCopy(pdOrder) {
+		lvDev, ok := volumeOf[dev]
+		if !ok {
+			continue
 		}
-		groups = append(groups, g)
+		idx, ok := groupIdx[lvDev]
+		if !ok {
+			continue // label points to an unknown volume: leave to inference
+		}
+		groups[idx].Members = append(groups[idx].Members, *pdByDev[dev])
+		used[dev] = true
+	}
+	for _, dev := range sortedCopy(lvOrder) {
+		members := matchMembers(lvByDev[dev], pdByDev, used)
+		if members != nil {
+			groups[groupIdx[dev]].Members = append(groups[groupIdx[dev]].Members, members...)
+		}
 	}
 	// Leftover physicals (direct-attach disks, unmapped RAID members).
 	for _, dev := range sortedCopy(pdOrder) {
 		if !used[dev] {
 			groups = append(groups, DiskGroup{Members: []DiskView{*pdByDev[dev]}})
 		}
+	}
+	// Deterministic member order inside each group.
+	for i := range groups {
+		members := groups[i].Members
+		sort.Slice(members, func(a, b int) bool { return members[a].Device < members[b].Device })
 	}
 	sortGroups(groups)
 

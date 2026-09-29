@@ -216,6 +216,7 @@
       '<div class="group-head">' +
       '  <span class="group-device">' + esc(lv.device) + '</span>' +
       '  <span class="badge accent">逻辑盘</span>' +
+      (lv.raid_level ? '<span class="badge badge-raid">' + esc(lv.raid_level) + '</span>' : '') +
       '  <span class="group-model">' + esc(lv.model || '') + '</span>' +
       '  <div class="group-usage">' + usageBar(usage) + '</div>' +
       '  <span class="group-cap">' + fmtGB(lv.capacity_gb) + '</span>' +

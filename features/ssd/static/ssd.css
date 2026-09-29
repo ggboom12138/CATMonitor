@@ -150,6 +150,7 @@ main { padding: 16px 24px 40px; }
 .group-grid > .sub-title:first-child { margin-top: 4px; }
 .badge-ssd { color: var(--accent); }
 .badge-hdd { color: var(--warn); }
+.badge-raid { color: #8b5cf6; }
 
 .group-charts {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
