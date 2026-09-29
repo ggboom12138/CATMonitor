@@ -427,11 +427,14 @@
       ctx.fillText(fmtNum(axisMax * i / 4), padL - 6, gy);
     }
 
-    // Label step: 2 hours when the plot is wide, 3 otherwise. The LAST slot
-    // (the partial current hour) is ALWAYS labeled ("HH:00–至今") — the
-    // modulo skip would otherwise hide it, since 23 is neither a multiple
-    // of 2 nor 3. Its neighbor is dropped on step 2 to avoid a collision.
-    var step = plotW >= 800 ? 2 : 3;
+    // Label density is adaptive to the MEASURED label width: hourly labels
+    // (24 of them) when one slot can host the full "10:00–11:00" text,
+    // every 2 or 3 hours otherwise — the densest step that fits without
+    // collisions, whatever the font metrics and canvas width.
+    var labelW = ctx.measureText('10:00–11:00').width;
+    var step = 3;
+    if (slotW >= labelW + 8) step = 1;
+    else if (2 * slotW >= labelW + 8) step = 2;
     var lastSlot = SLOTS - 1;
     ctx.textAlign = 'center';
     for (var s = 0; s < SLOTS; s++) {
