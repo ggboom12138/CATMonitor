@@ -1,0 +1,42 @@
+{
+"Controllers":[
+{
+	"Command Status" : {
+		"CLI Version" : "007.1613.0000.0000 Oct 29, 2020",
+		"Operating system" : "Linux 5.10.0-60.18.0.50.oe2203.aarch64",
+		"Controller" : 0,
+		"Status" : "Success",
+		"Description" : "None"
+	},
+	"Response Data" : {
+		"Virtual Drives" : [
+			{
+				"DG/VD" : "0/0",
+				"TYPE" : "RAID1",
+				"State" : "Optl",
+				"Access" : "RW",
+				"Consist" : "Yes",
+				"Cache" : "NRWTD",
+				"Cac" : "-",
+				"sCC" : "ON",
+				"Size" : "1.090 TB",
+				"Name" : ""
+			},
+			{
+				"DG/VD" : "1/1",
+				"TYPE" : "RAID0",
+				"State" : "Optl",
+				"Access" : "RW",
+				"Consist" : "Yes",
+				"Cache" : "NRWTD",
+				"Cac" : "-",
+				"sCC" : "ON",
+				"Size" : "1.745 TB",
+				"Name" : ""
+			}
+		]
+	}
+}
+]
+}
+
