@@ -222,7 +222,7 @@
       '  <span class="group-cap">' + fmtGB(lv.capacity_gb) + '</span>' +
       '</div>' +
       chartsHTML(lv.device, lv.io, g.members || []) +
-      hourlyChartCard(lv.device, lv.hourly) +
+      hourlyChartCards(lv.device, lv.hourly) +
       windowStatsHTML(lv.window_stats) +
       '<div class="group-members">' + members + '</div>' + noMembers +
       '</div>';
@@ -242,7 +242,7 @@
       '  <span class="group-cap">' + fmtGB(d.capacity_gb) + '</span>' +
       '</div>' +
       chartsHTML(d.device, d.io, [d]) +
-      hourlyChartCard(d.device, d.hourly) +
+      hourlyChartCards(d.device, d.hourly) +
       windowStatsHTML(d.window_stats) +
       '<div class="group-members">' + physicalCard(d) + '</div>' +
       '</div>';
@@ -314,40 +314,75 @@
       ' <span class="lg-unit">' + esc(unit) + '</span></span>';
   }
 
-  // hourlyChartCard renders the full-width 24h hourly bar chart: 4 bars per
-  // clock hour (读/写数据量 on the left GB axis, 读/写 IO 次数 on the right
-  // count axis) plus the purple cumulative (read+write GB) line rising over
-  // the bars. The card sits between the line charts and the window stats.
-  function hourlyChartCard(curveDevice, hourly) {
+  // hourlyChartCards renders TWO full-width 24h hourly bar charts: data
+  // volume (GB) and IO counts (次). Each has its own single Y axis, 2 bars
+  // per clock hour, and a purple cumulative line (read+write) rising over
+  // the bars. Legends carry the last FULL bucket's value plus the
+  // cumulative total, so the numbers are readable without the chart.
+  function hourlyChartCards(curveDevice, hourly) {
     if (!hourly || !hourly.length) return '';
-    var legend =
-      legendItem('读量', COLOR_READ, null, 'GB') +
-      legendItem('写量', COLOR_WRITE, null, 'GB') +
-      legendItem('读次', COLOR_IOS_READ, null, '次') +
-      legendItem('写次', COLOR_IOS_WRITE, null, '次') +
-      legendItem('累计读写', COLOR_CUMUL, null, 'GB');
+    var last = lastFullBucket(hourly);
+    var cumGB = 0, cumIOS = 0;
+    hourly.forEach(function (b) {
+      cumGB += (b.read_gb || 0) + (b.write_gb || 0);
+      cumIOS += (b.read_ios || 0) + (b.write_ios || 0);
+    });
+    var volLegend =
+      legendItem('读量', COLOR_READ, last ? last.read_gb : null, 'GB') +
+      legendItem('写量', COLOR_WRITE, last ? last.write_gb : null, 'GB') +
+      legendItem('累计读写', COLOR_CUMUL, cumGB, 'GB');
+    var iosLegend =
+      legendItem('读次', COLOR_IOS_READ, last ? last.read_ios : null, '次') +
+      legendItem('写次', COLOR_IOS_WRITE, last ? last.write_ios : null, '次') +
+      legendItem('累计读写次', COLOR_CUMUL, cumIOS, '次');
+    var id = safeID(curveDevice);
     return '<div class="chart-card chart-card-wide">' +
-      '<div class="chart-head"><span>近 24 小时逐时统计（每柱 = 该整点起 1 小时）</span>' +
-      '<span class="legend">' + legend + '</span></div>' +
-      '<canvas id="chart-hourly-' + safeID(curveDevice) + '" class="canvas-hourly"></canvas>' +
+      '<div class="chart-head"><span>近 24 小时逐时数据量 (GB)（每柱 = 该整点起 1 小时）</span>' +
+      '<span class="legend">' + volLegend + '</span></div>' +
+      '<canvas id="chart-hvol-' + id + '" class="canvas-hourly"></canvas>' +
+      '</div>' +
+      '<div class="chart-card chart-card-wide">' +
+      '<div class="chart-head"><span>近 24 小时逐时 IO 次数 (次)（每柱 = 该整点起 1 小时）</span>' +
+      '<span class="legend">' + iosLegend + '</span></div>' +
+      '<canvas id="chart-hios-' + id + '" class="canvas-hourly"></canvas>' +
       '</div>';
   }
 
-  // drawHourlyChart: 24 slots right-aligned, dual Y axis, partial (current
-  // hour) bucket at reduced opacity, hour-range x labels every step slots.
+  // lastFullBucket returns the newest non-partial bucket; falls back to the
+  // newest bucket when everything is partial (fresh start).
+  function lastFullBucket(hourly) {
+    for (var i = hourly.length - 1; i >= 0; i--) {
+      if (!hourly[i].partial) return hourly[i];
+    }
+    return hourly.length ? hourly[hourly.length - 1] : null;
+  }
+
+  // drawHourlyChart paints both hourly canvases (volume + counts).
   function drawHourlyChart(curveDevice, hourly) {
-    var canvas = $('chart-hourly-' + safeID(curveDevice));
-    if (!canvas || !hourly || !hourly.length) return;
+    if (!hourly || !hourly.length) return;
+    var id = safeID(curveDevice);
+    drawHourlyBars($('chart-hvol-' + id), hourly, 'volume');
+    drawHourlyBars($('chart-hios-' + id), hourly, 'counts');
+  }
+
+  // drawHourlyBars renders one hourly bar chart in the given mode:
+  // 'volume' (读/写 GB bars + cumulative GB line) or 'counts' (读/写 IO bars
+  // + cumulative count line). Single Y axis; its max covers the cumulative
+  // total so bars sit low and the line rises to the top. 24 slots
+  // right-aligned, partial (current hour) bucket at reduced opacity,
+  // hour-range x labels every step slots.
+  function drawHourlyBars(canvas, hourly, mode) {
+    if (!canvas) return;
     var dpr = window.devicePixelRatio || 1;
     var w = canvas.clientWidth || 900;
-    var hpx = canvas.clientHeight || 220;
+    var hpx = canvas.clientHeight || 200;
     canvas.width = w * dpr;
     canvas.height = hpx * dpr;
     var ctx = canvas.getContext('2d');
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, hpx);
 
-    var padL = 48, padR = 52, padT = 12, padB = 26;
+    var padL = 48, padR = 10, padT = 12, padB = 26;
     var plotW = w - padL - padR;
     var plotH = hpx - padT - padB;
     var gridColor = cssVar('--grid-line') || '#eee';
@@ -358,20 +393,27 @@
     var buckets = hourly.slice(-SLOTS);
     var offset = SLOTS - buckets.length; // right-align: uncovered past stays blank
 
-    // Scales: left (GB) covers the cumulative total so the line reaches the
-    // top while bars stay below; right (次) covers the largest IO bucket.
-    var cum = 0, cums = [];
-    var maxGB = 0, maxIOS = 0;
-    buckets.forEach(function (b) {
-      cum += (b.read_gb || 0) + (b.write_gb || 0);
-      cums.push(cum);
-      maxGB = Math.max(maxGB, b.read_gb || 0, b.write_gb || 0);
-      maxIOS = Math.max(maxIOS, b.read_ios || 0, b.write_ios || 0);
-    });
-    var leftMax = Math.max(cum, maxGB, 0.0001) * 1.08;
-    var rightMax = Math.max(maxIOS, 1) * 1.08;
+    // Mode selects the two bar series and the cumulative sum.
+    var readOf = mode === 'volume' ? function (b) { return b.read_gb || 0; }
+                                   : function (b) { return b.read_ios || 0; };
+    var writeOf = mode === 'volume' ? function (b) { return b.write_gb || 0; }
+                                    : function (b) { return b.write_ios || 0; };
+    var colorA = mode === 'volume' ? COLOR_READ : COLOR_IOS_READ;
+    var colorB = mode === 'volume' ? COLOR_WRITE : COLOR_IOS_WRITE;
 
-    // Horizontal gridlines + left (GB) and right (次) axis labels.
+    // Scale: the axis max covers the cumulative total (so the line reaches
+    // the top while bars stay below) and the largest single bucket.
+    var cum = 0, cums = [];
+    var maxV = 0;
+    buckets.forEach(function (b) {
+      var a = readOf(b), bv = writeOf(b);
+      cum += a + bv;
+      cums.push(cum);
+      maxV = Math.max(maxV, a, bv);
+    });
+    var axisMax = Math.max(cum, maxV, 0.0001) * 1.08;
+
+    // Horizontal gridlines + single left axis labels.
     ctx.font = '11px sans-serif';
     for (var i = 0; i <= 4; i++) {
       var gy = padT + plotH - plotH * i / 4;
@@ -382,9 +424,7 @@
       ctx.stroke();
       ctx.fillStyle = axisColor;
       ctx.textAlign = 'right';
-      ctx.fillText(fmtNum(leftMax * i / 4), padL - 6, gy);
-      ctx.textAlign = 'left';
-      ctx.fillText(fmtNum(rightMax * i / 4), w - padR + 6, gy);
+      ctx.fillText(fmtNum(axisMax * i / 4), padL - 6, gy);
     }
 
     // Label step: 2 hours when the plot is wide, 3 otherwise.
@@ -405,29 +445,27 @@
       ctx.fillText(hourRangeLabel(buckets[bi]), x0 + slotW / 2, padT + plotH + 14);
     }
 
-    // Bars: 4 per slot (读量/写量 vs left axis, 读次/写次 vs right axis).
-    var barW = slotW / 5;
-    buckets.forEach(function (b, bi) {
-      var s = offset + bi;
-      var x0 = padL + s * slotW + (slotW - 4 * barW) / 2;
+    // Bars: 2 per slot (读/写 in the chart's unit).
+    var barW = slotW / 3;
+    buckets.forEach(function (b, bIdx) {
+      var s = offset + bIdx;
+      var x0 = padL + s * slotW + (slotW - 2 * barW) / 2;
       ctx.globalAlpha = b.partial ? 0.45 : 1;
-      drawBar(ctx, x0, padT + plotH, barW, (b.read_gb || 0) / leftMax, plotH, COLOR_READ);
-      drawBar(ctx, x0 + barW, padT + plotH, barW, (b.write_gb || 0) / leftMax, plotH, COLOR_WRITE);
-      drawBar(ctx, x0 + 2 * barW, padT + plotH, barW, (b.read_ios || 0) / rightMax, plotH, COLOR_IOS_READ);
-      drawBar(ctx, x0 + 3 * barW, padT + plotH, barW, (b.write_ios || 0) / rightMax, plotH, COLOR_IOS_WRITE);
+      drawBar(ctx, x0, padT + plotH, barW, readOf(b) / axisMax, plotH, colorA);
+      drawBar(ctx, x0 + barW, padT + plotH, barW, writeOf(b) / axisMax, plotH, colorB);
       ctx.globalAlpha = 1;
     });
 
-    // Cumulative line (read+write GB) across bucket right edges, starting
-    // from the first bucket's left edge at zero.
+    // Cumulative line (read+write in the chart's unit) across bucket right
+    // edges, starting from the first bucket's left edge at zero.
     ctx.strokeStyle = COLOR_CUMUL;
     ctx.lineWidth = 2;
     ctx.beginPath();
-    buckets.forEach(function (b, bi) {
-      var xEnd = padL + (offset + bi + 1) * slotW;
-      var y = padT + plotH - plotH * (cums[bi] / leftMax);
-      if (bi === 0) {
-        var xStart = padL + (offset + bi) * slotW;
+    buckets.forEach(function (b, bIdx) {
+      var xEnd = padL + (offset + bIdx + 1) * slotW;
+      var y = padT + plotH - plotH * (cums[bIdx] / axisMax);
+      if (bIdx === 0) {
+        var xStart = padL + (offset + bIdx) * slotW;
         ctx.moveTo(xStart, padT + plotH);
         ctx.lineTo(xEnd, y);
       } else {
