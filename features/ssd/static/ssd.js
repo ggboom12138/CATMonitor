@@ -11,6 +11,11 @@
   // Per-physical-disk palette for the temperature chart series.
   var PALETTE = ['#3b82f6', '#f59e0b', '#10b981', '#ef4444',
                  '#8b5cf6', '#06b6d4', '#ec4899', '#84cc16'];
+  // Hourly bar chart colors: volume bars share the IO chart read/write
+  // colors; IO-count bars use lighter hues; the cumulative line is purple.
+  var COLOR_IOS_READ = '#06b6d4';
+  var COLOR_IOS_WRITE = '#eab308';
+  var COLOR_CUMUL = '#8b5cf6';
 
   var state = {
     intervalSec: 3,
@@ -169,21 +174,25 @@
     $('diskGrid').innerHTML = out;
 
     // Feed rolling buffers and draw every frame's charts: three IO charts
-    // from the curve source plus the per-member temperature chart.
+    // from the curve source, the per-member temperature chart, and the 24h
+    // hourly bar chart.
     groups.forEach(function (g) {
-      var curveDev = null, io = null, members = [];
+      var curveDev = null, io = null, members = [], hourly = null;
       if (g.logical) {
         curveDev = g.logical.device;
         io = g.logical.io;
         members = g.members || [];
+        hourly = g.logical.hourly;
       } else if (g.members && g.members.length) {
         curveDev = g.members[0].device;
         io = g.members[0].io;
         members = g.members;
+        hourly = g.members[0].hourly;
       }
       if (!curveDev) return;
       drawChartsFor(curveDev, io);
       drawTempChart(curveDev, members);
+      drawHourlyChart(curveDev, hourly);
     });
   }
 
@@ -212,6 +221,7 @@
       '  <span class="group-cap">' + fmtGB(lv.capacity_gb) + '</span>' +
       '</div>' +
       chartsHTML(lv.device, lv.io, g.members || []) +
+      hourlyChartCard(lv.device, lv.hourly) +
       windowStatsHTML(lv.window_stats) +
       '<div class="group-members">' + members + '</div>' + noMembers +
       '</div>';
@@ -231,6 +241,7 @@
       '  <span class="group-cap">' + fmtGB(d.capacity_gb) + '</span>' +
       '</div>' +
       chartsHTML(d.device, d.io, [d]) +
+      hourlyChartCard(d.device, d.hourly) +
       windowStatsHTML(d.window_stats) +
       '<div class="group-members">' + physicalCard(d) + '</div>' +
       '</div>';
@@ -300,6 +311,146 @@
     return '<span><i style="background:' + color + '"></i>' + name +
       ' <b class="lg-val" style="color:' + color + '">' + esc(v) + '</b>' +
       ' <span class="lg-unit">' + esc(unit) + '</span></span>';
+  }
+
+  // hourlyChartCard renders the full-width 24h hourly bar chart: 4 bars per
+  // clock hour (读/写数据量 on the left GB axis, 读/写 IO 次数 on the right
+  // count axis) plus the purple cumulative (read+write GB) line rising over
+  // the bars. The card sits between the line charts and the window stats.
+  function hourlyChartCard(curveDevice, hourly) {
+    if (!hourly || !hourly.length) return '';
+    var legend =
+      legendItem('读量', COLOR_READ, null, 'GB') +
+      legendItem('写量', COLOR_WRITE, null, 'GB') +
+      legendItem('读次', COLOR_IOS_READ, null, '次') +
+      legendItem('写次', COLOR_IOS_WRITE, null, '次') +
+      legendItem('累计读写', COLOR_CUMUL, null, 'GB');
+    return '<div class="chart-card chart-card-wide">' +
+      '<div class="chart-head"><span>近 24 小时逐时统计（每柱 = 该整点起 1 小时）</span>' +
+      '<span class="legend">' + legend + '</span></div>' +
+      '<canvas id="chart-hourly-' + safeID(curveDevice) + '" class="canvas-hourly"></canvas>' +
+      '</div>';
+  }
+
+  // drawHourlyChart: 24 slots right-aligned, dual Y axis, partial (current
+  // hour) bucket at reduced opacity, hour-range x labels every step slots.
+  function drawHourlyChart(curveDevice, hourly) {
+    var canvas = $('chart-hourly-' + safeID(curveDevice));
+    if (!canvas || !hourly || !hourly.length) return;
+    var dpr = window.devicePixelRatio || 1;
+    var w = canvas.clientWidth || 900;
+    var hpx = canvas.clientHeight || 220;
+    canvas.width = w * dpr;
+    canvas.height = hpx * dpr;
+    var ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, hpx);
+
+    var padL = 48, padR = 52, padT = 12, padB = 26;
+    var plotW = w - padL - padR;
+    var plotH = hpx - padT - padB;
+    var gridColor = cssVar('--grid-line') || '#eee';
+    var axisColor = cssVar('--axis-text') || '#999';
+
+    var SLOTS = 24;
+    var slotW = plotW / SLOTS;
+    var buckets = hourly.slice(-SLOTS);
+    var offset = SLOTS - buckets.length; // right-align: uncovered past stays blank
+
+    // Scales: left (GB) covers the cumulative total so the line reaches the
+    // top while bars stay below; right (次) covers the largest IO bucket.
+    var cum = 0, cums = [];
+    var maxGB = 0, maxIOS = 0;
+    buckets.forEach(function (b) {
+      cum += (b.read_gb || 0) + (b.write_gb || 0);
+      cums.push(cum);
+      maxGB = Math.max(maxGB, b.read_gb || 0, b.write_gb || 0);
+      maxIOS = Math.max(maxIOS, b.read_ios || 0, b.write_ios || 0);
+    });
+    var leftMax = Math.max(cum, maxGB, 0.0001) * 1.08;
+    var rightMax = Math.max(maxIOS, 1) * 1.08;
+
+    // Horizontal gridlines + left (GB) and right (次) axis labels.
+    ctx.font = '11px sans-serif';
+    for (var i = 0; i <= 4; i++) {
+      var gy = padT + plotH - plotH * i / 4;
+      ctx.strokeStyle = gridColor;
+      ctx.beginPath();
+      ctx.moveTo(padL, gy);
+      ctx.lineTo(w - padR, gy);
+      ctx.stroke();
+      ctx.fillStyle = axisColor;
+      ctx.textAlign = 'right';
+      ctx.fillText(fmtNum(leftMax * i / 4), padL - 6, gy);
+      ctx.textAlign = 'left';
+      ctx.fillText(fmtNum(rightMax * i / 4), w - padR + 6, gy);
+    }
+
+    // Label step: 2 hours when the plot is wide, 3 otherwise.
+    var step = plotW >= 800 ? 2 : 3;
+    ctx.textAlign = 'center';
+    for (var s = 0; s < SLOTS; s++) {
+      if (s % step !== 0) continue;
+      var bi = s - offset; // bucket index in this slot
+      if (bi < 0 || bi >= buckets.length) continue;
+      var x0 = padL + s * slotW;
+      // Light vertical gridline at the labeled hour boundary.
+      ctx.strokeStyle = gridColor;
+      ctx.beginPath();
+      ctx.moveTo(x0, padT);
+      ctx.lineTo(x0, padT + plotH);
+      ctx.stroke();
+      ctx.fillStyle = axisColor;
+      ctx.fillText(hourRangeLabel(buckets[bi]), x0 + slotW / 2, padT + plotH + 14);
+    }
+
+    // Bars: 4 per slot (读量/写量 vs left axis, 读次/写次 vs right axis).
+    var barW = slotW / 5;
+    buckets.forEach(function (b, bi) {
+      var s = offset + bi;
+      var x0 = padL + s * slotW + (slotW - 4 * barW) / 2;
+      ctx.globalAlpha = b.partial ? 0.45 : 1;
+      drawBar(ctx, x0, padT + plotH, barW, (b.read_gb || 0) / leftMax, plotH, COLOR_READ);
+      drawBar(ctx, x0 + barW, padT + plotH, barW, (b.write_gb || 0) / leftMax, plotH, COLOR_WRITE);
+      drawBar(ctx, x0 + 2 * barW, padT + plotH, barW, (b.read_ios || 0) / rightMax, plotH, COLOR_IOS_READ);
+      drawBar(ctx, x0 + 3 * barW, padT + plotH, barW, (b.write_ios || 0) / rightMax, plotH, COLOR_IOS_WRITE);
+      ctx.globalAlpha = 1;
+    });
+
+    // Cumulative line (read+write GB) across bucket right edges, starting
+    // from the first bucket's left edge at zero.
+    ctx.strokeStyle = COLOR_CUMUL;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    buckets.forEach(function (b, bi) {
+      var xEnd = padL + (offset + bi + 1) * slotW;
+      var y = padT + plotH - plotH * (cums[bi] / leftMax);
+      if (bi === 0) {
+        var xStart = padL + (offset + bi) * slotW;
+        ctx.moveTo(xStart, padT + plotH);
+        ctx.lineTo(xEnd, y);
+      } else {
+        ctx.lineTo(xEnd, y);
+      }
+    });
+    ctx.stroke();
+  }
+
+  function drawBar(ctx, x, baseY, bw, frac, plotH, color) {
+    if (frac <= 0) return;
+    var h = Math.max(1, plotH * Math.min(frac, 1));
+    ctx.fillStyle = color;
+    ctx.fillRect(x, baseY - h, Math.max(bw - 0.5, 0.5), h);
+  }
+
+  // hourRangeLabel turns "10:00" into "10:00–11:00" (partial buckets read
+  // "10:00–至今").
+  function hourRangeLabel(b) {
+    if (b.partial) return b.hour + '–至今';
+    var parts = b.hour.split(':');
+    var h = (parseInt(parts[0], 10) + 1) % 24;
+    var hh = (h < 10 ? '0' : '') + h;
+    return b.hour + '–' + hh + ':' + (parts[1] || '00');
   }
 
   // windowStatsHTML renders the 1/6/12/24h traffic/IO totals as a compact
