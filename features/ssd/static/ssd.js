@@ -427,11 +427,16 @@
       ctx.fillText(fmtNum(axisMax * i / 4), padL - 6, gy);
     }
 
-    // Label step: 2 hours when the plot is wide, 3 otherwise.
+    // Label step: 2 hours when the plot is wide, 3 otherwise. The LAST slot
+    // (the partial current hour) is ALWAYS labeled ("HH:00–至今") — the
+    // modulo skip would otherwise hide it, since 23 is neither a multiple
+    // of 2 nor 3. Its neighbor is dropped on step 2 to avoid a collision.
     var step = plotW >= 800 ? 2 : 3;
+    var lastSlot = SLOTS - 1;
     ctx.textAlign = 'center';
     for (var s = 0; s < SLOTS; s++) {
-      if (s % step !== 0) continue;
+      if (s === lastSlot - 1 && step === 2) continue; // collides with the last label
+      if (s % step !== 0 && s !== lastSlot) continue;
       var bi = s - offset; // bucket index in this slot
       if (bi < 0 || bi >= buckets.length) continue;
       var x0 = padL + s * slotW;
@@ -442,7 +447,14 @@
       ctx.lineTo(x0, padT + plotH);
       ctx.stroke();
       ctx.fillStyle = axisColor;
-      ctx.fillText(hourRangeLabel(buckets[bi]), x0 + slotW / 2, padT + plotH + 14);
+      if (s === lastSlot) {
+        // Right-align so the label never spills past the canvas edge.
+        ctx.textAlign = 'right';
+        ctx.fillText(hourRangeLabel(buckets[bi]), w - padR, padT + plotH + 14);
+        ctx.textAlign = 'center';
+      } else {
+        ctx.fillText(hourRangeLabel(buckets[bi]), x0 + slotW / 2, padT + plotH + 14);
+      }
     }
 
     // Bars: 2 per slot (读/写 in the chart's unit).
