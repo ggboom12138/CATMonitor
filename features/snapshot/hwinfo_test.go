@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Computing-Availability-Tools/CATMonitor/internal/collector"
+	"github.com/Computing-Availability-Tools/CATMonitor/internal/source/storcli"
 	"github.com/Computing-Availability-Tools/CATMonitor/internal/source/dmidecode"
 	"github.com/Computing-Availability-Tools/CATMonitor/internal/source/smartctl"
 	"github.com/Computing-Availability-Tools/CATMonitor/internal/source/sys"
@@ -25,6 +26,14 @@ func readHWMock(t *testing.T, path string) string {
 }
 
 func newTestHW() *hwCollector { return newHWCollector() }
+
+// disableStorcli keeps hwinfo tests hermetic on machines where a real
+// storcli is installed (the enrichment path would otherwise spawn it).
+func disableStorcli(t *testing.T) {
+	t.Helper()
+	storcli.SetCandidates(nil)
+	t.Cleanup(storcli.ResetCandidates)
+}
 
 func TestParseNPUStatic(t *testing.T) {
 	out := readHWMock(t, "../../tests/testdata/npu-smi-output.txt")
@@ -104,6 +113,7 @@ func TestHWNetInfo(t *testing.T) {
 }
 
 func TestHWDiskInfo(t *testing.T) {
+	disableStorcli(t)
 	sys.SetRoot(hwTestdataSys)
 	defer sys.SetRoot("/sys")
 	smartctl.SetInfoFetcher(func(dev string) (string, error) {
@@ -191,6 +201,7 @@ func TestHWDiskInfo(t *testing.T) {
 // panic and must only emit the 6 known identity metric names (or none when the
 // hardware/tools are absent).
 func TestCollectHWSpecsSmoke(t *testing.T) {
+	disableStorcli(t)
 	m := CollectHWSpecs()
 	known := map[string]bool{
 		"device_model": true, "os_info": true, "gpu_info": true, "npu_info": true,
@@ -230,6 +241,7 @@ var _ collector.Metric
 // passthrough channels exist (scan fails): every /sys/block device is a
 // direct physical disk, regardless of vendor.
 func TestHWDiskInfoNoRAID(t *testing.T) {
+	disableStorcli(t)
 	sys.SetRoot(hwTestdataSys)
 	defer sys.SetRoot("/sys")
 	smartctl.SetInfoFetcher(func(dev string) (string, error) {
@@ -246,5 +258,83 @@ func TestHWDiskInfoNoRAID(t *testing.T) {
 		if mm.Labels["kind"] != "physical" {
 			t.Errorf("%s kind: got %q want physical (no RAID channels on machine)", mm.Labels["device"], mm.Labels["kind"])
 		}
+	}
+}
+
+// TestEnrichRAIDLabels drives enrichRAIDLabels with the REAL storcli
+// fixtures (RAID1 HDD pair on DG0, RAID0 SSD pair on DG1) against synthetic
+// disk_info rows whose capacities mirror the reference machine.
+func TestEnrichRAIDLabels(t *testing.T) {
+	vd := readHWMock(t, "../../tests/testdata/storcli-vd.json")
+	pd := readHWMock(t, "../../tests/testdata/storcli-pd-all.json")
+	storcli.SetRunner(func(args ...string) (string, error) {
+		if strings.Contains(strings.Join(args, " "), "/vall") {
+			return vd, nil
+		}
+		return pd, nil
+	})
+	t.Cleanup(func() { storcli.SetRunner(nil) })
+
+	now := time.Now()
+	row := func(device, kind, media, serial string, capGB float64) collector.Metric {
+		labels := map[string]string{"device": device, "kind": kind, "media": media}
+		if serial != "" {
+			labels["serial"] = serial
+		}
+		return collector.Metric{Component: "disk", Name: "disk_info", Value: capGB, Unit: "GB", Labels: labels, Timestamp: now}
+	}
+	metrics := []collector.Metric{
+		row("sda", "logical", "hdd", "", 1199.7),                       // VD0 RAID1 1.090TiB
+		row("sdb", "logical", "ssd", "", 1919.3),                       // VD1 RAID0 1.745TiB
+		row("megaraid,0", "physical", "ssd", "S45NNA0N662029", 960.2),  // DID0 DG1
+		row("megaraid,1", "physical", "ssd", "S45NNA0N662039", 960.2),  // DID1 DG1
+		row("megaraid,4", "physical", "hdd", "WFK6ECL40000C025G6HT", 1200.2), // DID4 DG0
+		row("megaraid,5", "physical", "hdd", "WFK3ZQLL0000K942KUBN", 1200.2), // DID5 DG0
+		row("megaraid,9", "physical", "ssd", "SN-MISMATCH", 960.2),     // serial mismatch guard
+	}
+	enrichRAIDLabels(metrics)
+	byDev := map[string]collector.Metric{}
+	for _, m := range metrics {
+		byDev[m.Labels["device"]] = m
+	}
+	if v := byDev["megaraid,4"].Labels["volume"]; v != "sda" {
+		t.Errorf("megaraid,4 volume: got %q want sda", v)
+	}
+	if v := byDev["megaraid,5"].Labels["volume"]; v != "sda" {
+		t.Errorf("megaraid,5 volume: got %q want sda", v)
+	}
+	if v := byDev["megaraid,0"].Labels["volume"]; v != "sdb" {
+		t.Errorf("megaraid,0 volume: got %q want sdb", v)
+	}
+	if v := byDev["megaraid,1"].Labels["volume"]; v != "sdb" {
+		t.Errorf("megaraid,1 volume: got %q want sdb", v)
+	}
+	if v := byDev["sda"].Labels["raid_level"]; v != "RAID1" {
+		t.Errorf("sda raid_level: got %q want RAID1", v)
+	}
+	if v := byDev["sdb"].Labels["raid_level"]; v != "RAID0" {
+		t.Errorf("sdb raid_level: got %q want RAID0", v)
+	}
+	if v := byDev["megaraid,4"].Labels["raid_level"]; v != "RAID1" {
+		t.Errorf("megaraid,4 raid_level: got %q want RAID1", v)
+	}
+	// Serial mismatch (DID 9 does not exist / disagrees) must stay unlabeled.
+	if v, ok := byDev["megaraid,9"].Labels["volume"]; ok {
+		t.Errorf("megaraid,9 should stay unlabeled, got volume=%q", v)
+	}
+}
+
+// TestEnrichRAIDLabelsUnavailable: with no storcli the rows are untouched.
+func TestEnrichRAIDLabelsUnavailable(t *testing.T) {
+	disableStorcli(t)
+	now := time.Now()
+	metrics := []collector.Metric{{
+		Component: "disk", Name: "disk_info", Value: 100, Unit: "GB",
+		Labels: map[string]string{"device": "megaraid,0", "kind": "physical", "media": "ssd"},
+		Timestamp: now,
+	}}
+	enrichRAIDLabels(metrics)
+	if _, ok := metrics[0].Labels["volume"]; ok {
+		t.Error("no storcli => no volume label expected")
 	}
 }

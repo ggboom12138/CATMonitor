@@ -2,6 +2,7 @@ package snapshot
 
 import (
 	"context"
+	"math"
 	"os"
 	"os/exec"
 	"runtime"
@@ -12,6 +13,7 @@ import (
 	"github.com/Computing-Availability-Tools/CATMonitor/internal/collector"
 	"github.com/Computing-Availability-Tools/CATMonitor/internal/source/dmidecode"
 	"github.com/Computing-Availability-Tools/CATMonitor/internal/source/lspci"
+	"github.com/Computing-Availability-Tools/CATMonitor/internal/source/storcli"
 	"github.com/Computing-Availability-Tools/CATMonitor/internal/source/smartctl"
 	"github.com/Computing-Availability-Tools/CATMonitor/internal/source/sys"
 )
@@ -271,7 +273,90 @@ func (c *hwCollector) diskInfo(now time.Time) []collector.Metric {
 		})
 	}
 	metrics = append(metrics, raidDiskInfo(now)...)
+	enrichRAIDLabels(metrics)
 	return metrics
+}
+
+// enrichRAIDLabels consults storcli (when available) for the AUTHORITATIVE
+// virtual-drive → physical-drive mapping and stamps the matching disk_info
+// rows: physical RAID members get "volume" (their logical volume's device)
+// and both sides get "raid_level". smartctl's megaraid,N numbers physical
+// drives by the controller device id (DID), with a serial cross-check when
+// both sides know one; the VD→logical join is capacity ±1% + media type.
+// Any missing tool, query failure, serial mismatch or ambiguity leaves the
+// rows untouched — capacity-based inference downstream stays the fallback.
+func enrichRAIDLabels(metrics []collector.Metric) {
+	src := storcli.Default()
+	if !src.Available() {
+		return
+	}
+	vds := src.VDs()
+	pds := src.PDs()
+	if len(vds) == 0 || len(pds) == 0 {
+		return
+	}
+	dgToVD := make(map[int]storcli.VDInfo, len(vds))
+	for _, v := range vds {
+		dgToVD[v.DG] = v
+	}
+	byDID := make(map[int]storcli.PDInfo, len(pds))
+	for _, p := range pds {
+		byDID[p.DID] = p
+	}
+	type lvRow struct {
+		idx      int
+		capBytes float64
+		media    string
+	}
+	var logicals []lvRow
+	for i, m := range metrics {
+		if m.Name != "disk_info" || m.Component != "disk" || m.Labels["kind"] != "logical" {
+			continue
+		}
+		logicals = append(logicals, lvRow{idx: i, capBytes: m.Value * 1e9, media: m.Labels["media"]})
+	}
+	for i, m := range metrics {
+		if m.Name != "disk_info" || m.Component != "disk" {
+			continue
+		}
+		dev := m.Labels["device"]
+		if !strings.HasPrefix(dev, "megaraid,") {
+			continue
+		}
+		did, err := strconv.Atoi(strings.TrimPrefix(dev, "megaraid,"))
+		if err != nil {
+			continue
+		}
+		pd, ok := byDID[did]
+		if !ok {
+			continue
+		}
+		// Serial cross-check: a mismatch means the megaraid,N↔DID assumption
+		// does not hold on this controller — refuse to label.
+		if rowSN, pdSN := m.Labels["serial"], pd.Serial; rowSN != "" && pdSN != "" && rowSN != pdSN {
+			continue
+		}
+		vd, ok := dgToVD[pd.DG]
+		if !ok || vd.SizeBytes == 0 {
+			continue
+		}
+		match, matches := -1, 0
+		for _, lv := range logicals {
+			if lv.media != strings.ToLower(pd.Media) {
+				continue
+			}
+			if diff := math.Abs(lv.capBytes - float64(vd.SizeBytes)); diff/float64(vd.SizeBytes) <= 0.01 {
+				match = lv.idx
+				matches++
+			}
+		}
+		if matches != 1 {
+			continue // no or ambiguous logical volume: leave to inference
+		}
+		metrics[i].Labels["volume"] = metrics[match].Labels["device"]
+		metrics[i].Labels["raid_level"] = vd.RAIDLevel
+		metrics[match].Labels["raid_level"] = vd.RAIDLevel
+	}
 }
 
 // raidVendorPrefixes lists SCSI vendor strings that identify a RAID
