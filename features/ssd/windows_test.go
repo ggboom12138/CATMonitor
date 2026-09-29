@@ -192,6 +192,93 @@ func TestWindowSamplerIncompleteCounters(t *testing.T) {
 	}
 }
 
+// TestWindowSamplerHourly pins the clock-aligned bucket logic: boundaries at
+// whole hours, partial current hour, and omission of pre-coverage hours.
+func TestWindowSamplerHourly(t *testing.T) {
+	dir := t.TempDir()
+	// "Now" is mid-hour so truncation is exercised.
+	base := time.Date(2026, 9, 28, 10, 37, 0, 0, time.Local)
+	current := base
+	s := newWindowSampler(dir)
+	s.now = func() time.Time { return current }
+
+	// Ring covers 08:05 → 10:37 (now). Hour boundaries available: 09:00 and
+	// 10:00. Expected buckets: 09:00–10:00 (full) + 10:00–now (partial).
+	// 08:00 boundary predates the ring → no 08:00 bucket.
+	writeCounterSnapshot(t, dir, "sdb", 0, 0, 0, 0)
+	s.sample() // recorded at 08:05-ish; we control the clock, so set times explicitly below
+	// Re-record with controlled times: the sampler stamps samples with
+	// s.now(), so drive the clock explicitly.
+	current = time.Date(2026, 9, 28, 8, 5, 0, 0, time.Local)
+	s.sample()
+	current = time.Date(2026, 9, 28, 9, 0, 0, 0, time.Local)
+	writeCounterSnapshot(t, dir, "sdb", 1000, 2000, 100, 200)
+	s.sample()
+	current = time.Date(2026, 9, 28, 10, 0, 0, 0, time.Local)
+	writeCounterSnapshot(t, dir, "sdb", 3000, 5000, 300, 600)
+	s.sample()
+	current = base // 10:37
+	writeCounterSnapshot(t, dir, "sdb", 4000, 6500, 450, 800)
+	s.sample()
+
+	buckets := s.Hourly("sdb")
+	if len(buckets) != 2 {
+		t.Fatalf("expected 2 buckets (09:00 full + 10:00 partial), got %d: %+v", len(buckets), buckets)
+	}
+	full := buckets[0]
+	if full.Hour != "09:00" || full.Partial {
+		t.Errorf("first bucket: %+v", full)
+	}
+	// 09:00–10:00 delta: 2000 sectors read (=2000×512/GiB GB), 100 read IOs.
+	if full.ReadIOS != 200 || full.WriteIOS != 400 {
+		t.Errorf("full bucket IOs: got %d/%d want 200/400", full.ReadIOS, full.WriteIOS)
+	}
+	if full.ReadGB <= 0 || full.WriteGB <= 0 {
+		t.Errorf("full bucket GB: %+v", full)
+	}
+	partial := buckets[1]
+	if partial.Hour != "10:00" || !partial.Partial {
+		t.Errorf("last bucket should be the partial current hour: %+v", partial)
+	}
+	if partial.ReadIOS != 150 || partial.WriteIOS != 200 {
+		t.Errorf("partial bucket IOs: got %d/%d want 150/200", partial.ReadIOS, partial.WriteIOS)
+	}
+}
+
+// TestWindowSamplerHourlyColdStart: a freshly started sampler (ring begins
+// mid-hour) still yields one partial current-hour bucket instead of an
+// empty chart.
+func TestWindowSamplerHourlyColdStart(t *testing.T) {
+	dir := t.TempDir()
+	current := time.Date(2026, 9, 28, 10, 20, 0, 0, time.Local)
+	s := newWindowSampler(dir)
+	s.now = func() time.Time { return current }
+	writeCounterSnapshot(t, dir, "sdb", 0, 0, 0, 0)
+	s.sample() // 10:20
+	current = time.Date(2026, 9, 28, 10, 50, 0, 0, time.Local)
+	writeCounterSnapshot(t, dir, "sdb", 1000, 1000, 100, 100)
+	s.sample() // 10:50
+
+	buckets := s.Hourly("sdb")
+	if len(buckets) != 1 {
+		t.Fatalf("cold start should yield 1 partial bucket, got %d: %+v", len(buckets), buckets)
+	}
+	if buckets[0].Hour != "10:00" || !buckets[0].Partial {
+		t.Errorf("cold-start bucket: %+v", buckets[0])
+	}
+	if buckets[0].ReadIOS != 100 {
+		t.Errorf("cold-start delta (10:20→10:50): got %d want 100", buckets[0].ReadIOS)
+	}
+}
+
+// TestWindowSamplerHourlyEmpty: no samples → no buckets.
+func TestWindowSamplerHourlyEmpty(t *testing.T) {
+	s := newWindowSampler(t.TempDir())
+	if b := s.Hourly("sdb"); len(b) != 0 {
+		t.Errorf("no samples should yield no buckets, got %v", b)
+	}
+}
+
 func TestWindowSamplerNoSamples(t *testing.T) {
 	s := newWindowSampler(t.TempDir())
 	if ws := s.Windows("unknown"); len(ws) != 0 {

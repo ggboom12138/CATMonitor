@@ -79,14 +79,17 @@ func (h *Handler) handleAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	groups, overview := buildGroups(c.Specs, c.Metrics)
 	if h.sampler != nil {
-		// Window stats live on the curve sources: logical volumes and
-		// direct-attach disks (the devices that own diskstats counters).
+		// Window stats and the 24h hourly buckets live on the curve
+		// sources: logical volumes and direct-attach disks (the devices
+		// that own diskstats counters).
 		for i := range groups {
 			g := &groups[i]
 			if g.Logical != nil {
 				g.Logical.WindowStats = h.sampler.Windows(g.Logical.Device)
+				g.Logical.Hourly = h.sampler.Hourly(g.Logical.Device)
 			} else if len(g.Members) == 1 && g.Members[0].IO != nil {
 				g.Members[0].WindowStats = h.sampler.Windows(g.Members[0].Device)
+				g.Members[0].Hourly = h.sampler.Hourly(g.Members[0].Device)
 			}
 		}
 	}

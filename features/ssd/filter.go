@@ -58,13 +58,14 @@ type DiskGroup struct {
 // that only exist at this layer (filesystem usage and kernel IO stats) plus
 // the 1/6/12/24h window statistics computed by the handler-side sampler.
 type LogicalView struct {
-	Device      string               `json:"device"`
-	Model       string               `json:"model"`
-	Media       string               `json:"media,omitempty"`
-	CapacityGB  float64              `json:"capacity_gb"`
-	Space       *SpaceView           `json:"space,omitempty"`
-	IO          *IOView              `json:"io,omitempty"`
+	Device      string                `json:"device"`
+	Model       string                `json:"model"`
+	Media       string                `json:"media,omitempty"`
+	CapacityGB  float64               `json:"capacity_gb"`
+	Space       *SpaceView            `json:"space,omitempty"`
+	IO          *IOView               `json:"io,omitempty"`
 	WindowStats map[string]WindowStat `json:"window_stats,omitempty"`
+	Hourly      []HourBucket          `json:"hourly,omitempty"`
 }
 
 // DiskView is one physical disk: identity + SMART. Space/IO are only set for
@@ -72,17 +73,18 @@ type LogicalView struct {
 // block device the kernel sees filesystems and IO stats for. WindowStats is
 // set for direct-attach disks (their counters exist in diskstats).
 type DiskView struct {
-	Device      string               `json:"device"`
-	Model       string               `json:"model"`
-	Media       string               `json:"media,omitempty"`
-	Serial      string               `json:"serial,omitempty"`
-	Firmware    string               `json:"firmware,omitempty"`
-	Interface   string               `json:"interface,omitempty"`
-	CapacityGB  float64              `json:"capacity_gb"`
-	SMART       *SmartView           `json:"smart,omitempty"`
-	Space       *SpaceView           `json:"space,omitempty"`
-	IO          *IOView              `json:"io,omitempty"`
+	Device      string                `json:"device"`
+	Model       string                `json:"model"`
+	Media       string                `json:"media,omitempty"`
+	Serial      string                `json:"serial,omitempty"`
+	Firmware    string                `json:"firmware,omitempty"`
+	Interface   string                `json:"interface,omitempty"`
+	CapacityGB  float64               `json:"capacity_gb"`
+	SMART       *SmartView            `json:"smart,omitempty"`
+	Space       *SpaceView            `json:"space,omitempty"`
+	IO          *IOView               `json:"io,omitempty"`
 	WindowStats map[string]WindowStat `json:"window_stats,omitempty"`
+	Hourly      []HourBucket          `json:"hourly,omitempty"`
 }
 
 // SmartView holds the per-disk SMART snapshot. nil pointer fields mean the

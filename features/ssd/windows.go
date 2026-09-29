@@ -26,6 +26,18 @@ type WindowStat struct {
 	CoveredMinutes int     `json:"covered_minutes"` // span the delta covers; < window while accumulating
 }
 
+// HourBucket is one clock-aligned hour of traffic/IO (e.g. Hour "10:00"
+// covers 10:00–11:00). Partial marks the in-progress current hour; buckets
+// before the ring's coverage are omitted entirely.
+type HourBucket struct {
+	Hour     string  `json:"hour"` // bucket start, "15:04"
+	ReadGB   float64 `json:"read_gb"`
+	WriteGB  float64 `json:"write_gb"`
+	ReadIOS  uint64  `json:"read_ios"`
+	WriteIOS uint64  `json:"write_ios"`
+	Partial  bool    `json:"partial,omitempty"`
+}
+
 // windowSample is one point of a per-device counter ring.
 type windowSample struct {
 	t                            time.Time
@@ -184,4 +196,71 @@ func (s *windowSampler) Windows(device string) map[string]WindowStat {
 		}
 	}
 	return out
+}
+
+// counterAt returns the newest sample at or before t; nil when the ring
+// starts after t.
+func (s *windowSampler) counterAt(ring []windowSample, t time.Time) *windowSample {
+	for i := len(ring) - 1; i >= 0; i-- {
+		if !ring[i].t.After(t) {
+			sample := ring[i]
+			return &sample
+		}
+	}
+	return nil
+}
+
+// Hourly returns up to 24 clock-aligned hour buckets ending at the current
+// hour: full hours use the samples at both hour boundaries; the final
+// bucket (current hour, in progress) is Partial and runs to the latest
+// sample. Buckets whose start boundary predates the ring are omitted, so a
+// freshly started sampler yields a short, right-aligned array.
+func (s *windowSampler) Hourly(device string) []HourBucket {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ring := s.samples[device]
+	if len(ring) == 0 {
+		return nil
+	}
+	now := s.now()
+	hourStart := now.Truncate(time.Hour)
+	const giB = 1024 * 1024 * 1024
+	var out []HourBucket
+	for i := 23; i >= 0; i-- {
+		start := hourStart.Add(-time.Duration(i) * time.Hour)
+		var base, next *windowSample
+		if i == 0 {
+			// Current hour: base at the hour boundary, delta to latest.
+			// When the ring starts mid-hour (fresh process), fall back to
+			// the oldest sample so the chart shows a partial bar instead
+			// of staying blank for up to an hour.
+			base = s.counterAt(ring, start)
+			next = &ring[len(ring)-1]
+			if base == nil {
+				base = &ring[0]
+			}
+			out = append(out, s.bucket(start, base, next, giB, true))
+			continue
+		}
+		end := start.Add(time.Hour)
+		base = s.counterAt(ring, start)
+		next = s.counterAt(ring, end)
+		if base == nil || next == nil {
+			continue // boundary not covered by the ring
+		}
+		out = append(out, s.bucket(start, base, next, giB, false))
+	}
+	return out
+}
+
+// bucket diffs two counter samples into one HourBucket.
+func (s *windowSampler) bucket(start time.Time, base, next *windowSample, giB int, partial bool) HourBucket {
+	return HourBucket{
+		Hour:     start.Format("15:04"),
+		ReadGB:   float64(next.readSect-base.readSect) * 512 / float64(giB),
+		WriteGB:  float64(next.writeSect-base.writeSect) * 512 / float64(giB),
+		ReadIOS:  next.readIOS - base.readIOS,
+		WriteIOS: next.writeIOS - base.writeIOS,
+		Partial:  partial,
+	}
 }

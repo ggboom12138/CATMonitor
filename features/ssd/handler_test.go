@@ -79,6 +79,83 @@ func TestHandleAPI(t *testing.T) {
 	}
 }
 
+// TestHandleAPIWithSampler verifies the sampler-backed enrichment: window
+// stats and hourly buckets are attached to logical volumes.
+func TestHandleAPIWithSampler(t *testing.T) {
+	dir := t.TempDir()
+	// Snapshot with an SSD logical volume + counters for sdb.
+	global := `{"session_id":"1690000000","timestamp":"2026-09-28T10:00:00+08:00",` +
+		`"refresh_interval_ms":2000,"health":{"score":95,"grade":"A"}}`
+	comp := `{"component":"disk","timestamp":"2026-09-28T10:00:00+08:00",` +
+		`"specs":[{"component":"disk","name":"disk_info","value":100,"unit":"GB",` +
+		`"labels":{"device":"sdb","media":"ssd","kind":"logical","model":"M"},` +
+		`"timestamp":"2026-09-28T10:00:00+08:00"}],` +
+		`"metrics":[` +
+		`{"component":"disk","name":"read_sectors_total","value":2000,"labels":{"device":"sdb"},"timestamp":"2026-09-28T10:00:00+08:00"},` +
+		`{"component":"disk","name":"written_sectors_total","value":1000,"labels":{"device":"sdb"},"timestamp":"2026-09-28T10:00:00+08:00"},` +
+		`{"component":"disk","name":"read_ios_total","value":200,"labels":{"device":"sdb"},"timestamp":"2026-09-28T10:00:00+08:00"},` +
+		`{"component":"disk","name":"write_ios_total","value":100,"labels":{"device":"sdb"},"timestamp":"2026-09-28T10:00:00+08:00"}]}`
+	if err := os.WriteFile(filepath.Join(dir, "snapshot.json"), []byte(global), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "snapshot_disk.json"), []byte(comp), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	samp := newWindowSampler(dir)
+	fakeNow := time.Date(2026, 9, 28, 10, 0, 0, 0, time.Local)
+	samp.now = func() time.Time { return fakeNow }
+	samp.sample()
+	fakeNow = fakeNow.Add(time.Hour)
+	// advance counters by one full hour (name-prefixed replaces: disk_info
+	// also carries value:100 and must stay untouched)
+	comp = strings.Replace(comp, `"name":"read_sectors_total","value":2000`, `"name":"read_sectors_total","value":4000`, 1)
+	comp = strings.Replace(comp, `"name":"written_sectors_total","value":1000`, `"name":"written_sectors_total","value":3000`, 1)
+	comp = strings.Replace(comp, `"name":"read_ios_total","value":200`, `"name":"read_ios_total","value":400`, 1)
+	comp = strings.Replace(comp, `"name":"write_ios_total","value":100`, `"name":"write_ios_total","value":300`, 1)
+	if err := os.WriteFile(filepath.Join(dir, "snapshot_disk.json"), []byte(comp), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	samp.sample()
+
+	mux := http.NewServeMux()
+	RegisterWithSampler(mux, dir, samp)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/ssd")
+	if err != nil {
+		t.Fatalf("GET /api/ssd failed: %v", err)
+	}
+	defer resp.Body.Close()
+	var out SSDResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out.Groups) != 1 || out.Groups[0].Logical == nil {
+		t.Fatalf("groups: %+v", out.Groups)
+	}
+	lv := out.Groups[0].Logical
+	// Window stats: 1h delta = 2000 sectors / 200 read IOs / 200 write IOs.
+	if ws := lv.WindowStats["1h"]; ws.ReadIOS != 200 || ws.WriteIOS != 200 {
+		t.Errorf("1h window: %+v", ws)
+	}
+	// Hourly: samples sit exactly at 10:00 and 11:00, so hourStart (now) is
+	// 11:00 → one full bucket 10:00–11:00 + the partial current hour 11:00.
+	if len(lv.Hourly) != 2 {
+		t.Fatalf("hourly buckets: %+v", lv.Hourly)
+	}
+	if lv.Hourly[0].Hour != "10:00" || lv.Hourly[0].Partial {
+		t.Errorf("first bucket: %+v", lv.Hourly[0])
+	}
+	if lv.Hourly[0].ReadIOS != 200 || lv.Hourly[0].WriteIOS != 200 {
+		t.Errorf("bucket IOs: %+v", lv.Hourly[0])
+	}
+	if !lv.Hourly[1].Partial {
+		t.Errorf("last bucket should be partial: %+v", lv.Hourly[1])
+	}
+}
+
 func TestHandleAPISnapshotNotReady(t *testing.T) {
 	mux := http.NewServeMux()
 	Register(mux, t.TempDir()) // empty dir: no snapshot files
