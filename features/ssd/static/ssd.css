@@ -191,6 +191,16 @@ canvas { width: 100%; height: 150px; display: block; }
 .chart-card-wide { margin-bottom: 12px; }
 .canvas-hourly { height: 200px; }
 
+/* ---- per-bar hover tooltip & column highlight (fixed overlays) ---- */
+.chart-tip {
+  position: fixed; z-index: 50; pointer-events: none;
+  background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: var(--shadow); padding: 8px 12px; font-size: 12.5px; color: var(--text);
+}
+.chart-tip .tip-title { color: var(--muted); margin-bottom: 4px; }
+.chart-tip .tip-value { font-weight: 600; font-variant-numeric: tabular-nums; }
+.chart-hover { position: fixed; z-index: 5; pointer-events: none; }
+
 /* ---- flat SMART table inside the physical disk card ---- */
 .disk-card-flat .smart-table { margin-top: 10px; }
 .smart-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }

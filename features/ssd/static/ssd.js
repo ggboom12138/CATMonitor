@@ -12,10 +12,12 @@
   var PALETTE = ['#3b82f6', '#f59e0b', '#10b981', '#ef4444',
                  '#8b5cf6', '#06b6d4', '#ec4899', '#84cc16'];
   // Hourly bar chart colors: volume bars share the IO chart read/write
-  // colors; IO-count bars use lighter hues; the cumulative line is purple.
+  // colors; IO-count bars use lighter hues; the two cumulative lines are
+  // purple (read) and pink (write).
   var COLOR_IOS_READ = '#06b6d4';
   var COLOR_IOS_WRITE = '#eab308';
-  var COLOR_CUMUL = '#8b5cf6';
+  var COLOR_CUMUL_READ = '#8b5cf6';
+  var COLOR_CUMUL_WRITE = '#ec4899';
 
   var state = {
     intervalSec: 3,
@@ -194,6 +196,10 @@
       drawTempChart(curveDev, members);
       drawHourlyChart(curveDev, hourly);
     });
+
+    // The re-render replaced the canvases under a possibly stationary
+    // cursor — rebuild the hover tooltip from the fresh buckets.
+    refreshHoverAfterRender();
   }
 
   // groupMedia picks the section a group belongs to: the logical volume's
@@ -321,20 +327,23 @@
   // cumulative total, so the numbers are readable without the chart.
   function hourlyChartCards(curveDevice, hourly) {
     if (!hourly || !hourly.length) return '';
-    var last = lastFullBucket(hourly);
-    var cumGB = 0, cumIOS = 0;
+    var cumR = 0, cumW = 0, cumRI = 0, cumWI = 0;
     hourly.forEach(function (b) {
-      cumGB += (b.read_gb || 0) + (b.write_gb || 0);
-      cumIOS += (b.read_ios || 0) + (b.write_ios || 0);
+      cumR += b.read_gb || 0;
+      cumW += b.write_gb || 0;
+      cumRI += b.read_ios || 0;
+      cumWI += b.write_ios || 0;
     });
     var volLegend =
-      legendItem('读量', COLOR_READ, last ? last.read_gb : null, 'GB') +
-      legendItem('写量', COLOR_WRITE, last ? last.write_gb : null, 'GB') +
-      legendItem('累计读写', COLOR_CUMUL, cumGB, 'GB');
+      legendKey('读量', COLOR_READ) +
+      legendKey('写量', COLOR_WRITE) +
+      legendItem('累计读', COLOR_CUMUL_READ, cumR, 'GB') +
+      legendItem('累计写', COLOR_CUMUL_WRITE, cumW, 'GB');
     var iosLegend =
-      legendItem('读次', COLOR_IOS_READ, last ? last.read_ios : null, '次') +
-      legendItem('写次', COLOR_IOS_WRITE, last ? last.write_ios : null, '次') +
-      legendItem('累计读写次', COLOR_CUMUL, cumIOS, '次');
+      legendKey('读次', COLOR_IOS_READ) +
+      legendKey('写次', COLOR_IOS_WRITE) +
+      legendItem('累计读次', COLOR_CUMUL_READ, cumRI, '次') +
+      legendItem('累计写次', COLOR_CUMUL_WRITE, cumWI, '次');
     var id = safeID(curveDevice);
     return '<div class="chart-card chart-card-wide">' +
       '<div class="chart-head"><span>近 24 小时逐时数据量 (GB)（每柱 = 该整点起 1 小时）</span>' +
@@ -348,13 +357,10 @@
       '</div>';
   }
 
-  // lastFullBucket returns the newest non-partial bucket; falls back to the
-  // newest bucket when everything is partial (fresh start).
-  function lastFullBucket(hourly) {
-    for (var i = hourly.length - 1; i >= 0; i--) {
-      if (!hourly[i].partial) return hourly[i];
-    }
-    return hourly.length ? hourly[hourly.length - 1] : null;
+  // legendKey renders a pure color key (swatch + name) — no value, no unit
+  // (the unit already lives in the chart title).
+  function legendKey(name, color) {
+    return '<span><i style="background:' + color + '"></i>' + esc(name) + '</span>';
   }
 
   // drawHourlyChart paints both hourly canvases (volume + counts).
@@ -401,17 +407,26 @@
     var colorA = mode === 'volume' ? COLOR_READ : COLOR_IOS_READ;
     var colorB = mode === 'volume' ? COLOR_WRITE : COLOR_IOS_WRITE;
 
-    // Scale: the axis max covers the cumulative total (so the line reaches
-    // the top while bars stay below) and the largest single bucket.
-    var cum = 0, cums = [];
+    // Scale: the axis max covers BOTH cumulative totals (so the taller line
+    // reaches the top while bars stay below) and the largest single bucket.
+    var cumA = 0, cumsA = [], cumB = 0, cumsB = [];
     var maxV = 0;
     buckets.forEach(function (b) {
       var a = readOf(b), bv = writeOf(b);
-      cum += a + bv;
-      cums.push(cum);
+      cumA += a; cumsA.push(cumA);
+      cumB += bv; cumsB.push(cumB);
       maxV = Math.max(maxV, a, bv);
     });
-    var axisMax = Math.max(cum, maxV, 0.0001) * 1.08;
+    var axisMax = Math.max(cumA, cumB, maxV, 0.0001) * 1.08;
+
+    // Register the hit geometry for the delegated hover tooltip (the DOM is
+    // rebuilt every poll, so listeners live on the container instead — see
+    // onGridMouseMove).
+    chartHits[canvas.id] = {
+      mode: mode, padL: padL, padT: padT, plotH: plotH,
+      slotW: slotW, barW: barW, offset: offset, buckets: buckets,
+      colorA: colorA, colorB: colorB,
+    };
 
     // Horizontal gridlines + single left axis labels.
     ctx.font = '11px sans-serif';
@@ -471,23 +486,138 @@
       ctx.globalAlpha = 1;
     });
 
-    // Cumulative line (read+write in the chart's unit) across bucket right
-    // edges, starting from the first bucket's left edge at zero.
-    ctx.strokeStyle = COLOR_CUMUL;
+    // Cumulative lines: read (purple) and write (pink), each across bucket
+    // right edges and starting from the first bucket's left edge at zero.
+    drawCumLine(ctx, buckets, cumsA, offset, padL, slotW, padT, plotH, axisMax, COLOR_CUMUL_READ);
+    drawCumLine(ctx, buckets, cumsB, offset, padL, slotW, padT, plotH, axisMax, COLOR_CUMUL_WRITE);
+  }
+
+  // drawCumLine plots one cumulative series across bucket right edges.
+  function drawCumLine(ctx, buckets, cums, offset, padL, slotW, padT, plotH, axisMax, color) {
+    ctx.strokeStyle = color;
     ctx.lineWidth = 2;
     ctx.beginPath();
     buckets.forEach(function (b, bIdx) {
       var xEnd = padL + (offset + bIdx + 1) * slotW;
       var y = padT + plotH - plotH * (cums[bIdx] / axisMax);
       if (bIdx === 0) {
-        var xStart = padL + (offset + bIdx) * slotW;
-        ctx.moveTo(xStart, padT + plotH);
+        ctx.moveTo(padL + (offset + bIdx) * slotW, padT + plotH);
         ctx.lineTo(xEnd, y);
       } else {
         ctx.lineTo(xEnd, y);
       }
     });
     ctx.stroke();
+  }
+
+  // ---------- per-bar hover tooltip (delegated) ----------
+  // The grid DOM is rebuilt every poll, so hover events are delegated to the
+  // persistent #diskGrid container; each drawHourlyBars call refreshes the
+  // hit geometry in chartHits keyed by canvas id. The tooltip and highlight
+  // are fixed-position HTML overlays, immune to canvas redraws.
+  var chartHits = {};   // canvas id -> hit info
+  var lastHover = null; // {canvasId, slot, series, mouseX, mouseY} while shown
+
+  function ensureHoverDivs() {
+    if ($('chartTip')) return;
+    var tip = document.createElement('div');
+    tip.id = 'chartTip';
+    tip.className = 'chart-tip hidden';
+    document.body.appendChild(tip);
+    var hl = document.createElement('div');
+    hl.id = 'chartHover';
+    hl.className = 'chart-hover hidden';
+    document.body.appendChild(hl);
+  }
+
+  function hideHover() {
+    lastHover = null;
+    var tip = $('chartTip'), hl = $('chartHover');
+    if (tip) tip.classList.add('hidden');
+    if (hl) hl.classList.add('hidden');
+  }
+
+  // showHover renders the tooltip + bar-column highlight for one bar
+  // (series 0 = read, 1 = write). Defensive: invalid buckets just hide.
+  function showHover(canvas, info, slot, series, mouseX, mouseY) {
+    var b = info.buckets[slot - info.offset];
+    if (!b) { hideHover(); return; }
+    ensureHoverDivs();
+    var name, value, unit, hlColor;
+    if (info.mode === 'volume') {
+      name = series === 0 ? '读量' : '写量';
+      value = series === 0 ? b.read_gb : b.write_gb;
+      unit = 'GB';
+    } else {
+      name = series === 0 ? '读次' : '写次';
+      value = series === 0 ? b.read_ios : b.write_ios;
+      unit = '次';
+    }
+    hlColor = series === 0 ? info.colorA : info.colorB;
+
+    var tip = $('chartTip');
+    tip.innerHTML =
+      '<div class="tip-title">' + esc(name) + ' · ' + esc(hourRangeLabel(b)) + '</div>' +
+      '<div class="tip-value">' + esc(fmtNum(value)) + ' <span class="lg-unit">' + esc(unit) + '</span></div>';
+    tip.classList.remove('hidden');
+    var tw = tip.offsetWidth, th = tip.offsetHeight;
+    var tx = mouseX + 14, ty = mouseY + 14;
+    if (tx + tw > window.innerWidth - 8) tx = mouseX - tw - 14;
+    if (ty + th > window.innerHeight - 8) ty = mouseY - th - 14;
+    tip.style.left = tx + 'px';
+    tip.style.top = ty + 'px';
+
+    // Column highlight over the hit bar's X range (the bar itself may be
+    // only 1px tall, so the strip spans the plot height).
+    var rect = canvas.getBoundingClientRect();
+    var barX0 = info.padL + slot * info.slotW + (info.slotW - 2 * info.barW) / 2;
+    var hl = $('chartHover');
+    hl.style.left = (rect.left + barX0 + (series === 0 ? 0 : info.barW)) + 'px';
+    hl.style.top = (rect.top + info.padT) + 'px';
+    hl.style.width = info.barW + 'px';
+    hl.style.height = info.plotH + 'px';
+    hl.style.background = hlColor + '22';
+    hl.style.borderLeft = hl.style.borderRight = '1px solid ' + hlColor + '55';
+    hl.classList.remove('hidden');
+
+    lastHover = { canvasId: canvas.id, slot: slot, series: series, mouseX: mouseX, mouseY: mouseY };
+  }
+
+  // onGridMouseMove: delegated hit test — plot area only, precise to a
+  // single bar (the gaps between bars hide the tooltip).
+  function onGridMouseMove(e) {
+    var canvas = e.target;
+    if (!canvas || canvas.tagName !== 'CANVAS') { hideHover(); return; }
+    var info = chartHits[canvas.id];
+    if (!info) { hideHover(); return; }
+    var rect = canvas.getBoundingClientRect();
+    var mx = e.clientX - rect.left;
+    var my = e.clientY - rect.top;
+    if (mx < info.padL || mx > info.padL + 24 * info.slotW ||
+        my < info.padT || my > info.padT + info.plotH) {
+      hideHover();
+      return;
+    }
+    var slot = Math.floor((mx - info.padL) / info.slotW);
+    var bi = slot - info.offset;
+    if (bi < 0 || bi >= info.buckets.length) { hideHover(); return; }
+    var barX0 = info.padL + slot * info.slotW + (info.slotW - 2 * info.barW) / 2;
+    var localX = mx - barX0;
+    var series = -1;
+    if (localX >= 0 && localX < info.barW) series = 0;
+    else if (localX >= info.barW && localX < 2 * info.barW) series = 1;
+    if (series < 0) { hideHover(); return; } // gap between bars / slot padding
+    showHover(canvas, info, slot, series, e.clientX, e.clientY);
+  }
+
+  // refreshHoverAfterRender re-shows the tooltip with fresh data after a
+  // poll re-render (the cursor may not have moved, but the buckets changed).
+  function refreshHoverAfterRender() {
+    if (!lastHover) return;
+    var canvas = document.getElementById(lastHover.canvasId);
+    var info = chartHits[lastHover.canvasId];
+    if (!canvas || !info) { hideHover(); return; }
+    showHover(canvas, info, lastHover.slot, lastHover.series, lastHover.mouseX, lastHover.mouseY);
   }
 
   function drawBar(ctx, x, baseY, bw, frac, plotH, color) {
@@ -740,6 +870,11 @@
     });
     $('refreshBtn').addEventListener('click', fetchAndRender);
     window.addEventListener('resize', fetchAndRender);
+    // Hover tooltip: delegated to the persistent grid container (the grid's
+    // innerHTML is rebuilt every poll).
+    var grid = $('diskGrid');
+    grid.addEventListener('mousemove', onGridMouseMove);
+    grid.addEventListener('mouseleave', hideHover);
     fetchAndRender();
     restartTimer();
   }
