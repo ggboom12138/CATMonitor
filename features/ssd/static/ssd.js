@@ -419,15 +419,6 @@
     });
     var axisMax = Math.max(cumA, cumB, maxV, 0.0001) * 1.08;
 
-    // Register the hit geometry for the delegated hover tooltip (the DOM is
-    // rebuilt every poll, so listeners live on the container instead — see
-    // onGridMouseMove).
-    chartHits[canvas.id] = {
-      mode: mode, padL: padL, padT: padT, plotH: plotH,
-      slotW: slotW, barW: barW, offset: offset, buckets: buckets,
-      colorA: colorA, colorB: colorB,
-    };
-
     // Horizontal gridlines + single left axis labels.
     ctx.font = '11px sans-serif';
     for (var i = 0; i <= 4; i++) {
@@ -477,6 +468,17 @@
 
     // Bars: 2 per slot (读/写 in the chart's unit).
     var barW = slotW / 3;
+
+    // Register the hit geometry for the delegated hover tooltip. MUST stay
+    // after the barW assignment: var hoisting left it undefined when this
+    // block lived before the declaration, silently killing every hit test
+    // (barX0 became NaN and no series ever matched).
+    chartHits[canvas.id] = {
+      mode: mode, padL: padL, padT: padT, plotH: plotH,
+      slotW: slotW, barW: barW, offset: offset, buckets: buckets,
+      colorA: colorA, colorB: colorB,
+    };
+
     buckets.forEach(function (b, bIdx) {
       var s = offset + bIdx;
       var x0 = padL + s * slotW + (slotW - 2 * barW) / 2;
