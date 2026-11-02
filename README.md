@@ -31,7 +31,7 @@ CATMonitor 是 CAT (Computing Availability Tools) 系列软件之一，用于采
 - **来源层架构**：`internal/source/`（15 包）抽象数据获取与解析，采集器不直接读文件/执行命令，无硬件时优雅降级
 - **跨平台**：Linux (x86_64 / arm64) / Windows (x86_64)，构建标签隔离平台代码；纯 Go 构建无架构限制，Linux/arm64 可原生构建运行（NPU DCMI 经 `-tags dcmi` 在 arm64 原生编译，容器化镜像已提供 arm64 制品）
 - **易扩展**：新增部件采集器只需实现统一接口并注册，核心代码零修改
-- **Agent Skills**：内置面向 AI Agent（Claude Code 等）的只读技能包 [`skills/`](skills/README.md)——健康巡检 `catmonitor-health` / 指标查询 `catmonitor-metrics` / NPU 故障事件 `catmonitor-faults`，`make skills-install` 一键安装
+- **Agent Skills**：内置面向 AI Agent（Claude Code 等）的只读技能包 [`skills/`](skills/README.md)——健康巡检 `catmonitor-health` / 指标查询 `catmonitor-metrics` / NPU 故障事件 `catmonitor-faults`，`make skills-install` 一键安装，或 `npx catmonitor-skills` 在线安装
 
 > 各特性功能规格见 [SPEC.md](SPEC.md)，各特性的设计与规格见对应 `features/<feature>/*_SPEC.md`。
 

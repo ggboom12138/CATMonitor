@@ -34,6 +34,21 @@ bash scripts/install_skills.sh --list
 - "查一下 NPU 的温度和利用率" → `catmonitor-metrics`
 - "这台机器有没有掉卡记录？最近有什么 NPU 故障？" → `catmonitor-faults`
 
+## 通过 npx 安装（免 clone 仓库）
+
+npm 包 `catmonitor-skills` 提供一行命令安装（需要 Node.js ≥14）：
+
+```bash
+npx catmonitor-skills              # 用户级 ~/.claude/skills（Claude Code / OpenCode 等通用）
+npx catmonitor-skills --project    # 项目级 ./.claude/skills
+npx catmonitor-skills --list       # 只预览，不安装
+npx catmonitor-skills@latest       # npx 有缓存，更新时显式指定 @latest
+```
+
+> 国内网络提示：npmjs.com 直连较慢时，可先 `npm config set registry https://registry.npmmirror.com`（新发布包同步到镜像有分钟级延迟）。
+>
+> 维护者发布流程：修改 `skills/` 后 bump 根目录 `package.json` 的 `version` → `npm publish`。
+
 ## 前置条件
 
 - 目标机器已安装 CATMonitor（Go 版）：`catmonitor version` 输出形如 `CATMonitor v0.3.6 (Go 1.23+)`
